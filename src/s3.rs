@@ -4,6 +4,7 @@ use crate::config::S3;
 
 use aws_config::{SdkConfig, meta::region::RegionProviderChain};
 use aws_sdk_s3::config::{Credentials, SharedCredentialsProvider};
+use uuid::Uuid;
 
 #[derive(Clone, Debug)]
 pub struct CustomS3client {
@@ -39,24 +40,24 @@ impl CustomS3client {
         Ok(Self::new(s3_client))
     }
 
+    pub async fn create_bucket_with_id(&self) -> anyhow::Result<Uuid> {
+        let id = uuid::Uuid::new_v4();
+
+        self.client
+            .create_bucket()
+            .set_bucket(Some(id.to_string()))
+            .send()
+            .await?;
+
+        Ok(id)
+    }
+
     pub async fn create_bucket(&self, name: &str) -> anyhow::Result<()> {
         self.client
             .create_bucket()
             .set_bucket(Some(name.to_string()))
             .send()
             .await?;
-
-        Ok(())
-    }
-
-    pub async fn create_folder(&self, folder_name: &str, bucket_name: &str) -> anyhow::Result<()> {
-        self.client
-            .put_object()
-            .bucket(bucket_name)
-            .key(folder_name)
-            .send()
-            .await
-            .map_err(|e| anyhow::anyhow!("{e}: couldn't create bucket folder"))?;
 
         Ok(())
     }

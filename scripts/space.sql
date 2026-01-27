@@ -6,6 +6,7 @@ CREATE TABLE space (
   topic TEXT,
   messages UUID[],
   creation_time TIMESTAMPTZ NOT NULL DEFAULT now(),
+  bucket_id UUID NOT NULL,
   metadata UUID REFERENCES space_metadata(id),
   CONSTRAINT space_origin_and_name UNIQUE (server_id, name) -- make sure only one space that have similar name in server
 );

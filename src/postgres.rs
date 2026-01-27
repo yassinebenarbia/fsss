@@ -114,16 +114,11 @@ impl CustomPostgresClient {
         Ok(matches!(role, Role::Admin))
     }
 
-    pub async fn create_empty_server(
-        &self,
-        name: &str,
-        creator: i64,
-        bucket_id: &Uuid,
-    ) -> anyhow::Result<()> {
+    pub async fn create_empty_server(&self, name: &str, creator: i64) -> anyhow::Result<()> {
         self.postgres_client
             .execute(
-                "INSERT INTO servers(name, creator, bucket_id) VALUES ($1, $2, $3);",
-                &[&name, &creator, bucket_id],
+                "INSERT INTO servers(name, creator) VALUES ($1, $2);",
+                &[&name, &creator],
             )
             .await
             .map_err(|_| anyhow!("Unable to create server '{}'", name))?;
@@ -153,10 +148,8 @@ impl CustomPostgresClient {
         &self,
         server_name: &str,
         creator: i64,
-        bucket_id: &Uuid,
     ) -> anyhow::Result<Uuid> {
-        self.create_empty_server(server_name, creator, bucket_id)
-            .await?;
+        self.create_empty_server(server_name, creator).await?;
         let server_id = self.get_server_id(server_name, creator).await?;
         self.join_server(&server_id.to_string(), creator, &Role::Admin)
             .await?;
@@ -168,11 +161,12 @@ impl CustomPostgresClient {
         name: &str,
         server: &str,
         creator: i64,
+        bucket_id: &Uuid,
     ) -> anyhow::Result<()> {
         self.postgres_client
             .execute(
-                "INSERT INTO space(creator, name, server_id) VALUES ($1, $2, $3);",
-                &[&creator, &name, &Uuid::from_str(server)?],
+                "INSERT INTO space(creator, name, server_id, bucket_id) VALUES ($1, $2, $3, $4);",
+                &[&creator, &name, &Uuid::from_str(server)?, bucket_id],
             )
             .await
             .map_err(|e| anyhow!("{e}: space already exist!"))?;
