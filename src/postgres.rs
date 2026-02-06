@@ -23,7 +23,7 @@ use tokio::sync::Mutex;
 use tokio_postgres::Client as PostgresClient;
 use uuid::Uuid;
 
-use crate::api::{Server, Space, Token};
+use crate::api::{Message, MessageKind as WsMessageKind, Server, Space, Token};
 
 pub struct User {
     pub name: String,
@@ -86,6 +86,63 @@ impl ToSql for Role {
     }
 }
 
+#[derive(Deserialize, Serialize, Debug)]
+pub enum MessageKind {
+    TEXT,
+    FILE,
+}
+
+impl From<&crate::websocket::MessageKind> for MessageKind {
+    fn from(value: &crate::api::MessageKind) -> Self {
+        match value {
+            crate::api::MessageKind::Text | crate::api::MessageKind::Markdown => Self::TEXT,
+        }
+    }
+}
+
+impl<'a> FromSql<'a> for MessageKind {
+    fn from_sql(
+        ty: &Type,
+        raw: &'a [u8],
+    ) -> Result<Self, Box<dyn std::error::Error + Sync + Send>> {
+        let s = <&str as FromSql>::from_sql(ty, raw)?;
+
+        match s {
+            "text" | "TEXT" | "Text" => Ok(MessageKind::TEXT),
+            "file" | "FILE" | "File" => Ok(MessageKind::FILE),
+            _ => Err(format!("invalid MessageKind value: {}", s).into()),
+        }
+    }
+
+    fn accepts(ty: &Type) -> bool {
+        matches!(ty.name(), "message_kind")
+    }
+}
+
+impl ToSql for MessageKind {
+    fn accepts(ty: &Type) -> bool {
+        matches!(ty.name(), "message_kind")
+    }
+
+    tokio_postgres::types::to_sql_checked!();
+
+    fn to_sql(
+        &self,
+        ty: &Type,
+        out: &mut BytesMut,
+    ) -> Result<IsNull, Box<dyn std::error::Error + Sync + Send>>
+    where
+        Self: Sized,
+    {
+        let s = match self {
+            MessageKind::TEXT => "TEXT",
+            MessageKind::FILE => "FILE",
+        };
+
+        s.to_sql(ty, out)
+    }
+}
+
 // NOTE: This abstraction exist to implement some frequetly used
 // methods over the postgres db
 pub struct CustomPostgresClient {
@@ -99,7 +156,20 @@ impl CustomPostgresClient {
         }
     }
 
-    pub async fn is_admin(&self, user_id: i64, server_id: &str) -> anyhow::Result<bool> {
+    pub async fn is_joined(&self, server_id: &str, user_id: i64) -> anyhow::Result<bool> {
+        Ok(self
+            .postgres_client
+            .query_one(
+                "SELECT role FROM user_server WHERE user_id = $1 AND server_id = $2",
+                &[&user_id, &Uuid::from_str(server_id)?],
+            )
+            .await
+            .map_err(|_| anyhow!("Unable to locate user/server or user did not join the server"))?
+            .len()
+            .ne(&0))
+    }
+
+    pub async fn is_admin(&self, server_id: &str, user_id: i64) -> anyhow::Result<bool> {
         let row = self
             .postgres_client
             .query_one(
@@ -138,7 +208,7 @@ impl CustomPostgresClient {
                 &[&Uuid::from_str(server_id)?, &user_id, &role],
             )
             .await
-            .map_err(|_| anyhow!("Unable to join '{}'", server_id))?;
+            .map_err(|e| anyhow!("{e}: Unable to join '{}'", server_id))?;
 
         Ok(())
     }
@@ -159,17 +229,35 @@ impl CustomPostgresClient {
     pub async fn create_empty_space(
         &self,
         name: &str,
-        server: &str,
-        creator: i64,
+        server_id: &str,
+        creator_id: i64,
         bucket_id: &Uuid,
     ) -> anyhow::Result<()> {
         self.postgres_client
             .execute(
                 "INSERT INTO space(creator, name, server_id, bucket_id) VALUES ($1, $2, $3, $4);",
-                &[&creator, &name, &Uuid::from_str(server)?, bucket_id],
+                &[&creator_id, &name, &Uuid::from_str(server_id)?, bucket_id],
             )
             .await
-            .map_err(|e| anyhow!("{e}: space already exist!"))?;
+            .map_err(|e| anyhow!("{e}: unable to create space {name}!"))?;
+        Ok(())
+    }
+
+    pub async fn create_empty_space_with_uuid(
+        &self,
+        space_name: &str,
+        server_id: &str,
+        creator_id: i64,
+        bucket_id: &Uuid,
+        space_id: &Uuid,
+    ) -> anyhow::Result<()> {
+        self.postgres_client
+            .execute(
+                "INSERT INTO space(creator, name, server_id, bucket_id, id) VALUES ($1, $2, $3, $4, $5);",
+                &[&creator_id, &space_name, &Uuid::from_str(server_id)?, bucket_id, &space_id],
+            )
+            .await
+            .map_err(|e| anyhow!("{e}: unable to create space {space_name}!"))?;
         Ok(())
     }
 
@@ -232,7 +320,37 @@ impl CustomPostgresClient {
         })
     }
 
-    pub async fn register_user(&self, username: &str, password: &str) -> anyhow::Result<()> {
+    pub async fn get_spaces(&self, server_id: &str) -> anyhow::Result<Vec<Space>> {
+        let locked_postgres = self.postgres_client.clone();
+        let rows = locked_postgres
+            .query(
+                "SELECT id, name, topic, creator, creation_time, bucket_id from space where server_id = $1",
+                &[&uuid::Uuid::from_str(&server_id).unwrap()],
+            )
+            .await?;
+
+        let mut spaces = vec![];
+        for row in rows {
+            let space_id: Uuid = row.get::<usize, Uuid>(0);
+            let space_name: String = row.get::<usize, String>(1);
+            let space_topic: Option<String> = row.get::<usize, Option<String>>(2);
+            let space_creator: i64 = row.get::<usize, i64>(3);
+            let creation_time: NaiveDateTime = row.get::<usize, DateTime<Utc>>(4).naive_utc();
+            let bucket: Uuid = row.get::<usize, Uuid>(5);
+            spaces.push(Space::new(
+                space_id,
+                space_name,
+                space_topic,
+                space_creator,
+                creation_time,
+                bucket,
+            ))
+        }
+
+        Ok(spaces)
+    }
+
+    pub async fn register_user(&self, username: &str, password: &str) -> anyhow::Result<Token> {
         if self.check_user_exist(username).await? {
             eprintln!("Username {} already exist", username);
             return Err(anyhow!("Username already exist"));
@@ -250,10 +368,7 @@ impl CustomPostgresClient {
         let id = self.get_user(username).await?.id;
         println!("ID: {id} USER: {username}");
 
-        self.register_token_for_user(id).await?;
-
-        println!("user registered sucessfully");
-        Ok(())
+        self.register_token_for_user(id).await
     }
 
     pub async fn destroy_token(&self, token: &Token) -> anyhow::Result<()> {
@@ -268,9 +383,46 @@ impl CustomPostgresClient {
         todo!()
     }
 
+    pub async fn get_space_messages(
+        &self,
+        space_id: &Uuid,
+        limit: &Option<i64>,
+    ) -> anyhow::Result<Vec<Message>> {
+        println!("IHHH");
+        let limit = limit.unwrap_or(20);
+        let rows = self
+            .postgres_client
+            .query(
+                "SELECT id, space_id, content, sender_id, message_kind, sent_time FROM messages WHERE space_id = $1 LIMIT $2;",
+                &[&space_id, &limit],
+            )
+            .await?;
+
+        let mut messages = vec![];
+
+        for row in rows {
+            let id = row.get::<usize, Uuid>(0);
+            let space_id = row.get::<usize, Uuid>(1);
+            let content = row.get::<usize, String>(2);
+            let sender = row.get::<usize, i64>(3);
+            let kind = row.get::<usize, MessageKind>(4);
+            let sent_time = row.get::<usize, DateTime<Utc>>(5).naive_utc();
+            messages.push(Message::new(
+                id,
+                space_id,
+                content,
+                sender,
+                kind.into(),
+                sent_time,
+            ));
+        }
+
+        Ok(messages)
+    }
+
     pub async fn login_user(&self, username: &str, password: &str) -> anyhow::Result<Token> {
-        let locked_conn = self.postgres_client.clone();
-        let rows = locked_conn
+        let rows = self
+            .postgres_client
             .query(
                 "SELECT id, password_hash FROM users WHERE name = $1;",
                 &[&username],
@@ -374,6 +526,73 @@ impl CustomPostgresClient {
         }
     }
 
+    pub async fn get_server_id_from_space(&self, space_id: &Uuid) -> anyhow::Result<Uuid> {
+        let row = self
+            .postgres_client
+            .query_one("SELECT server_id FROM space WHERE id = $1;", &[&space_id])
+            .await?;
+
+        if row.is_empty() {
+            return Err(anyhow!("space {space_id} doesn't exist!"));
+        } else {
+            return Ok(row.get::<usize, Uuid>(0));
+        }
+    }
+
+    pub async fn write_file_message(
+        &self,
+        server_id: &Uuid,
+        space_id: &Uuid,
+        user_id: i64,
+        message_kind: &MessageKind,
+        key: &str,
+    ) -> anyhow::Result<()> {
+        if !self
+            .contains_space(&server_id.to_string(), &space_id.to_string())
+            .await?
+        {
+            return Err(anyhow!(
+                "Server {server_id} does not have a space with id {space_id}"
+            ));
+        }
+
+        self.postgres_client
+            .execute(
+                "INSERT INTO messages(space_id, message_kind, sender_id, content) Values($1, $2, $3, $4)",
+                &[&space_id, &message_kind, &user_id, &key],
+            )
+            .await?;
+
+        Ok(())
+    }
+
+    pub async fn write_text_message(
+        &self,
+        server_id: &Uuid,
+        space_id: &Uuid,
+        user_id: i64,
+        message_kind: &MessageKind,
+        text: &str,
+    ) -> anyhow::Result<()> {
+        if !self
+            .contains_space(&server_id.to_string(), &space_id.to_string())
+            .await?
+        {
+            return Err(anyhow!(
+                "Server {server_id} does not have a space with id {space_id}"
+            ));
+        }
+
+        self.postgres_client
+            .execute(
+                "INSERT INTO messages(space_id, message_kind, sender_id, content) Values($1, $2, $3, $4)",
+                &[&space_id, &message_kind, &user_id, &text],
+            )
+            .await?;
+
+        Ok(())
+    }
+
     pub async fn token_exist_and_not_expired(&self, token: &str) -> anyhow::Result<bool> {
         let locked_conn = self.postgres_client.clone();
         let rows = locked_conn
@@ -414,8 +633,29 @@ impl CustomPostgresClient {
         todo!()
     }
 
+    pub async fn get_joined_servers(&self, user_id: &i64) -> anyhow::Result<Vec<Server>> {
+        let rows = self
+            .postgres_client
+            .query(
+                "SELECT server_id FROM user_server WHERE user_id = $1",
+                &[&user_id],
+            )
+            .await
+            .map_err(|_| anyhow!("Unable to locate user/server"))?;
+
+        let mut servers = vec![];
+
+        for row in rows {
+            let server_id = row.get::<usize, Uuid>(0);
+            servers.push(self.get_server(&server_id).await?);
+        }
+
+        return Ok(servers);
+    }
+
     pub async fn get_created_servers(&self, token: &str) -> anyhow::Result<Vec<Server>> {
         let id = self.get_user_id_from_token(token).await?;
+
         let rows = self
             .postgres_client
             .query("SELECT * FROM servers WHERE creator = $1", &[&id])
@@ -434,6 +674,32 @@ impl CustomPostgresClient {
         return Ok(servers);
     }
 
+    pub async fn server_exist(&self, server_id: &str) -> anyhow::Result<bool> {
+        Ok(self
+            .postgres_client
+            .query_one(
+                "SELECT id FROM space WHERE server_id = $1",
+                &[&uuid::Uuid::from_str(server_id).unwrap()],
+            )
+            .await?
+            .len()
+            .eq(&1))
+    }
+
+    pub async fn contains_space(&self, server_id: &str, space_id: &str) -> anyhow::Result<bool> {
+        Ok(!self
+            .postgres_client
+            .query(
+                "SELECT id FROM space WHERE id = $1 AND server_id = $2;",
+                &[
+                    &uuid::Uuid::from_str(space_id).unwrap(),
+                    &uuid::Uuid::from_str(server_id).unwrap(),
+                ],
+            )
+            .await?
+            .is_empty())
+    }
+
     pub async fn get_server_spaces(&self, server_id: &str) -> anyhow::Result<Vec<Space>> {
         let rows = self
             .postgres_client
@@ -450,13 +716,15 @@ impl CustomPostgresClient {
             let space_name = row.get::<usize, String>(1);
             let space_topic = row.get::<usize, Option<String>>(2);
             let creator = row.get::<usize, i64>(3);
-            let creation_time = row.get::<usize, chrono::DateTime<Utc>>(4).naive_utc();
+            let creation_time = row.get::<usize, DateTime<Utc>>(4).naive_utc();
+            let bucket_id = row.get::<usize, Uuid>(0);
             servers.push(Space::new(
                 space_id,
                 space_name,
                 space_topic,
                 creator,
                 creation_time,
+                bucket_id,
             ))
         }
 
@@ -476,16 +744,34 @@ impl CustomPostgresClient {
         Ok(id)
     }
 
-    pub async fn get_bucket_id(&self, server_id: &str) -> anyhow::Result<Uuid> {
+    pub async fn get_space_bucket_id(&self, server_id: &str) -> anyhow::Result<Uuid> {
         let row = self
             .postgres_client
             .query_one(
-                "SELECT bucket_id FROM servers WHERE id = $1;",
+                "SELECT bucket_id FROM space WHERE id = $1;",
                 &[&Uuid::from_str(server_id).unwrap()],
             )
             .await
             .map_err(|e| anyhow!("{e}: Server '{}' not found!", server_id))?;
         let id = row.get::<usize, Uuid>(0);
         Ok(id)
+    }
+
+    async fn get_server(&self, server_id: &Uuid) -> anyhow::Result<Server> {
+        let row = self
+            .postgres_client
+            .query_one(
+                "SELECT id, name, creation_time, creator FROM servers WHERE id = $1",
+                &[&server_id],
+            )
+            .await
+            .map_err(|_| anyhow!("Unable to locate server with id {server_id}"))?;
+
+        let server_id = row.get::<usize, Uuid>(0);
+        let server_name = row.get::<usize, String>(1);
+        let creation_time = row.get::<usize, DateTime<Utc>>(2).naive_utc();
+        let creator = row.get::<usize, i64>(3);
+
+        Ok(Server::new(server_id, server_name, creation_time, creator))
     }
 }

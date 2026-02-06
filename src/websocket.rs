@@ -1,4 +1,5 @@
 // TODO: add update datetime in sql tables
+// TODO: add previlages to returned joined server list
 // TODO: rename register to signup
 // TODO: remove the word request
 use std::sync::Arc;
@@ -7,16 +8,10 @@ use anyhow::{Error, anyhow};
 use chrono::{NaiveDateTime, Utc};
 use futures_util::StreamExt;
 use futures_util::{SinkExt, TryFutureExt, stream::SplitSink};
-use minio::s3::Client as MinioClient;
-use minio::s3::Client;
-use postgres::types::Timestamp;
 use rand::distr::{Alphanumeric, SampleString};
 use serde::{Deserialize, Serialize};
-use time::Duration;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{Mutex, RwLock};
-use tokio_postgres::Client as PostgresClient;
-use tokio_tungstenite::{WebSocketStream, tungstenite::Message};
+use tokio_tungstenite::{WebSocketStream, tungstenite};
 use uuid::Uuid;
 
 use crate::s3::CustomS3client;
@@ -84,6 +79,8 @@ pub struct Space {
     topic: Option<String>,
     creator: i64,
     creation_time: NaiveDateTime,
+    #[serde(skip_serializing)]
+    bucket: Uuid,
 }
 
 impl Space {
@@ -93,13 +90,45 @@ impl Space {
         space_topic: Option<String>,
         creator: i64,
         creation_time: NaiveDateTime,
+        bucket: Uuid,
     ) -> Self {
         Self {
             id: space_id,
             name: space_name,
             topic: space_topic,
             creator,
+            bucket,
             creation_time,
+        }
+    }
+}
+
+#[derive(Deserialize, Serialize)]
+pub struct Message {
+    id: Uuid,
+    space_id: Uuid,
+    content: String,
+    sender: i64,
+    kind: crate::postgres::MessageKind,
+    sent_time: NaiveDateTime,
+}
+
+impl Message {
+    pub fn new(
+        id: Uuid,
+        space_id: Uuid,
+        content: String,
+        sender: i64,
+        kind: crate::postgres::MessageKind,
+        sent_time: NaiveDateTime,
+    ) -> Self {
+        Self {
+            id,
+            space_id,
+            content,
+            sender,
+            kind,
+            sent_time,
         }
     }
 }
@@ -119,18 +148,34 @@ pub struct RegisterRequest {
     pub password: String,
 }
 
+impl Process for RegisterRequest {
+    async fn process(
+        &self,
+        postgres_client: Arc<CustomPostgresClient>,
+        _: Arc<CustomS3client>,
+        token: &str,
+    ) -> anyhow::Result<Response> {
+        if !postgres_client.token_exist_and_not_expired(token).await? {
+            return Err(anyhow!("Token does not exist or expired!"));
+        }
+
+        postgres_client
+            .register_user(&self.username, &self.password)
+            .await
+            .map(|_| Response::Ok())
+    }
+}
+
 #[derive(Deserialize, Serialize, Debug)]
 pub struct CreateServerRequest {
     name: String,
 }
 
-impl CreateServerRequest {
-    /// Crates a server for the token owner.
-    /// Failes if token is expired, or don't exist, or via internal error
+impl Process for CreateServerRequest {
     async fn process(
         &self,
         postgres_client: Arc<CustomPostgresClient>,
-        s3_client: Arc<CustomS3client>,
+        _: Arc<CustomS3client>,
         token: &str,
     ) -> anyhow::Result<Response> {
         if !postgres_client.token_exist_and_not_expired(token).await? {
@@ -138,30 +183,24 @@ impl CreateServerRequest {
         }
 
         let id = postgres_client.get_user_id_from_token(token).await?;
-        let bucket_id = &uuid::Uuid::new_v4();
-        s3_client.create_bucket(&bucket_id.to_string()).await?;
 
         println!("ID: {id}");
 
-        match postgres_client
-            .create_empty_server_and_join(&self.name, id, bucket_id)
+        postgres_client
+            .create_empty_server_and_join(&self.name, id)
             .await
-        {
-            Ok(v) => Ok(Response::ServerId(v)),
-            Err(e) => {
-                s3_client.remove_bucket(&bucket_id.to_string()).await?;
-                Err(e)
-            }
-        }
+            .map(Response::ServerId)
     }
 }
 
 #[derive(Deserialize, Serialize)]
 pub struct RenewToken {}
-impl RenewToken {
+
+impl Process for RenewToken {
     async fn process(
         &self,
         postgres_client: Arc<CustomPostgresClient>,
+        _: Arc<CustomS3client>,
         token: &str,
     ) -> anyhow::Result<Response> {
         if !postgres_client.token_exist_and_not_expired(token).await? {
@@ -182,7 +221,7 @@ pub struct CreateSpaceRequest {
     server: String,
 }
 
-impl CreateSpaceRequest {
+impl Process for CreateSpaceRequest {
     async fn process(
         &self,
         postgres_client: Arc<CustomPostgresClient>,
@@ -195,29 +234,27 @@ impl CreateSpaceRequest {
 
         let user_id = postgres_client.get_user_id_from_token(token).await?;
 
-        if !postgres_client.is_admin(user_id, &self.server).await? {
+        if !postgres_client.is_admin(&self.server, user_id).await? {
             return Err(anyhow!("Unseficcient previlages"));
         }
 
-        let bucket_id = postgres_client
-            .create_empty_space(&self.name, &self.server, user_id)
-            .await
-            .and(postgres_client.get_bucket_id(&self.server).await)?;
-
-        match s3_client
-            .create_folder(&self.name, &bucket_id.to_string())
-            .await
-        {
-            Ok(_) => {}
-            Err(e) => {
+        s3_client
+            .create_bucket_with_id()
+            .and_then(|bucket_id| async move {
+                let id = uuid::Uuid::new_v4();
                 postgres_client
-                    .delete_space(&self.name, &self.server)
+                    .create_empty_space_with_uuid(
+                        &self.name,
+                        &self.server,
+                        user_id,
+                        &bucket_id,
+                        &id,
+                    )
                     .await?;
-                return Err(anyhow!("{e}"));
-            }
-        }
-
-        Ok(Response::Ok())
+                return Ok(id);
+            })
+            .await
+            .map(Response::SpaceId)
     }
 }
 
@@ -227,10 +264,11 @@ pub struct DeleteSpaceRequest {
     server: String,
 }
 
-impl DeleteSpaceRequest {
+impl Process for DeleteSpaceRequest {
     async fn process(
         &self,
         postgres_client: Arc<CustomPostgresClient>,
+        _: Arc<CustomS3client>,
         token: &str,
     ) -> anyhow::Result<Response> {
         if !postgres_client.token_exist_and_not_expired(token).await? {
@@ -239,28 +277,54 @@ impl DeleteSpaceRequest {
 
         let id = postgres_client.get_user_id_from_token(token).await?;
 
-        if !postgres_client.is_admin(id, &self.server).await? {
+        if !postgres_client.is_admin(&self.server, id).await? {
             return Err(anyhow!("Unseficcient previlages"));
         }
 
         postgres_client
             .delete_space(&self.name, &self.server)
-            .await?;
-
-        Ok(Response::Ok())
+            .await
+            .map(|_| Response::Ok())
     }
 }
 
-#[derive(Deserialize, Serialize)]
-pub struct CreateBucketRequest {}
+#[derive(Deserialize, Serialize, Debug)]
+pub struct ListServerSpaces {
+    server: String,
+}
+
+impl Process for ListServerSpaces {
+    async fn process(
+        &self,
+        postgres_client: Arc<CustomPostgresClient>,
+        _: Arc<CustomS3client>,
+        token: &str,
+    ) -> anyhow::Result<Response> {
+        if !postgres_client.token_exist_and_not_expired(token).await? {
+            return Err(anyhow!("Token does not exist or expired!"));
+        }
+
+        let id = postgres_client.get_user_id_from_token(token).await?;
+
+        if !postgres_client.is_joined(&self.server, id).await? {
+            return Err(anyhow!("You need to join to access server spaces"));
+        }
+
+        postgres_client
+            .get_spaces(&self.server)
+            .await
+            .map(Response::SpacesList)
+    }
+}
 
 #[derive(Deserialize, Serialize, Debug)]
 pub struct ListCreatedServersRequest {}
 
-impl ListCreatedServersRequest {
+impl Process for ListCreatedServersRequest {
     async fn process(
         &self,
         postgres_client: Arc<CustomPostgresClient>,
+        _: Arc<CustomS3client>,
         token: &str,
     ) -> anyhow::Result<Response> {
         if !postgres_client.token_exist_and_not_expired(token).await? {
@@ -270,29 +334,30 @@ impl ListCreatedServersRequest {
         postgres_client
             .get_created_servers(&token)
             .await
-            .map(|v| Response::ServersList(v))
+            .map(Response::ServersList)
     }
 }
 
 #[derive(Deserialize, Serialize, Debug)]
-pub struct ListServerSpacesRequest {
-    id: String,
-}
+pub struct ListJoinedServersRequest {}
 
-impl ListServerSpacesRequest {
+impl Process for ListJoinedServersRequest {
     async fn process(
         &self,
         postgres_client: Arc<CustomPostgresClient>,
+        _: Arc<CustomS3client>,
         token: &str,
     ) -> anyhow::Result<Response> {
         if !postgres_client.token_exist_and_not_expired(token).await? {
             return Err(anyhow!("Token does not exist or expired!"));
         }
 
+        let id = postgres_client.get_user_id_from_token(token).await?;
+
         postgres_client
-            .get_server_spaces(&self.id)
+            .get_joined_servers(&id)
             .await
-            .map(|v| Response::SpacesList(v))
+            .map(Response::ServersList)
     }
 }
 
@@ -301,22 +366,23 @@ pub struct JoinServerRequest {
     id: String,
 }
 
-impl JoinServerRequest {
-    /// Joins the server as a `member`
+impl Process for JoinServerRequest {
     async fn process(
         &self,
         postgres_client: Arc<CustomPostgresClient>,
+        _: Arc<CustomS3client>,
         token: &str,
     ) -> anyhow::Result<Response> {
         if !postgres_client.token_exist_and_not_expired(token).await? {
             return Err(anyhow!("Token does not exist or expired!"));
         }
+
         let user_id = postgres_client.get_user_id_from_token(token).await?;
 
         postgres_client
             .join_server(&self.id, user_id, &Role::Member)
-            .await?;
-        Ok(Response::Ok())
+            .await
+            .map(|_| Response::Ok())
     }
 }
 
@@ -325,45 +391,126 @@ pub struct LeaveServerRequest {
     id: String,
 }
 
-impl LeaveServerRequest {
-    /// Leaves the server as a `member`
+impl Process for LeaveServerRequest {
     async fn process(
         &self,
         postgres_client: Arc<CustomPostgresClient>,
+        _: Arc<CustomS3client>,
         token: &str,
     ) -> anyhow::Result<Response> {
         if !postgres_client.token_exist_and_not_expired(token).await? {
             return Err(anyhow!("Token does not exist or expired!"));
         }
+
         let user_id = postgres_client.get_user_id_from_token(token).await?;
 
-        postgres_client.leave_server(&self.id, user_id).await?;
-        Ok(Response::Ok())
+        postgres_client
+            .leave_server(&self.id, user_id)
+            .await
+            .map(|_| Response::Ok())
     }
 }
 
-#[derive(Deserialize, Serialize, Debug)]
-enum MessageKind {
-    Text(String),
-    Markdown(String),
-    File { name: String },
+#[derive(Deserialize, Serialize, Debug, Clone)]
+pub enum MessageKind {
+    Text,
+    Markdown,
 }
 
+impl Into<crate::postgres::MessageKind> for MessageKind {
+    fn into(self) -> crate::postgres::MessageKind {
+        match self {
+            MessageKind::Text | MessageKind::Markdown => crate::postgres::MessageKind::TEXT,
+        }
+    }
+}
+
+// NOTE:
+// hi catch this message // this will be sent over ws
+// ..sending a text file // this will be sent over http
+// did you get the message // this will be sent over ws
+// HOW DO WE KNOW THE ORDER OF THE MESSAGE WITHOUT LETTING THE USER
+// EXPLICITLY SPECIFY THE ORDER?
+// SOLUTIONS:
+// 1) have a list of messages UUIDs and MESSAGES table where it can specify the
+// message type and metadta, then when we receieve a file over http, we just
+// construct new message table entry and append the uuid to the space UUIDs
+//
+// NOTE: A USER NEED TO BE A MEMBER OF THE SERVER TO BE ABLE TO SEND MESSAGES
+//
+// NOTE: ADD STATUS LIKE MUTED AND BANNED PER SERVER/SPACE AND SPACE STATUS
+// (slow_mode, text only, media only, etc.)
+//
+// NOTE: ONLY TEXT MESSAGES ARE ALLOWED TO BE SENT OVER WS
+// ALL MEDIA MESSAGES (files) SHOULD BE FORWARDED THROUGH HTTP
+// THROUGH THE /upload PATH
 #[derive(Deserialize, Serialize, Debug)]
 pub struct WriteMessageRequest {
     server_id: Uuid,
     space_id: Uuid,
     message_kind: MessageKind,
+    message_content: String,
 }
 
-impl WriteMessageRequest {
-    /// Leaves the server as a `member`
+impl Process for WriteMessageRequest {
     async fn process(
         &self,
         postgres_client: Arc<CustomPostgresClient>,
+        _: Arc<CustomS3client>,
         token: &str,
     ) -> anyhow::Result<Response> {
-        todo!()
+        if !postgres_client.token_exist_and_not_expired(token).await? {
+            return Err(anyhow!("Token does not exist or expired!"));
+        }
+
+        let id = postgres_client.get_user_id_from_token(token).await?;
+
+        postgres_client
+            .write_text_message(
+                &self.server_id,
+                &self.space_id,
+                id,
+                &self.message_kind.clone().into(),
+                &self.message_content,
+            )
+            .await
+            .map(|_| Response::Ok())
+    }
+}
+
+#[derive(Deserialize, Serialize, Debug)]
+struct GetSpaceMessagesRequest {
+    space_id: Uuid,
+    limit: Option<u64>,
+}
+
+impl Process for GetSpaceMessagesRequest {
+    async fn process(
+        &self,
+        postgres_client: Arc<CustomPostgresClient>,
+        _: Arc<CustomS3client>,
+        token: &str,
+    ) -> anyhow::Result<Response> {
+        if !postgres_client.token_exist_and_not_expired(token).await? {
+            return Err(anyhow!("Token does not exist or expired!"));
+        }
+
+        let user_id = postgres_client.get_user_id_from_token(&token).await?;
+        let server_id = postgres_client
+            .get_server_id_from_space(&self.space_id)
+            .await?;
+
+        if !postgres_client
+            .is_joined(&server_id.to_string(), user_id)
+            .await?
+        {
+            return Err(anyhow!("user is not a server member!"));
+        }
+
+        postgres_client
+            .get_space_messages(&self.space_id, &self.limit.map(|v| v as i64))
+            .await
+            .map(Response::MessageList)
     }
 }
 
@@ -381,26 +528,12 @@ pub enum AfterToken {
 }
 
 #[derive(Deserialize, Serialize)]
-pub enum TokanizedMessage {
-    #[serde(untagged)]
-    CreateServer {
-        token: String,
-        #[serde(flatten)]
-        message: CreateServerRequest,
-    },
-    #[serde(untagged)]
-    CreateSpace {
-        token: String,
-        #[serde(flatten)]
-        message: CreateSpaceRequest,
-    },
-    #[serde(untagged)]
-    ListCreatedServers(),
-}
-
-#[derive(Deserialize, Serialize)]
 pub enum MessageType {
-    RegisterRequest(RegisterRequest),
+    RegisterRequest {
+        token: String,
+        #[serde(flatten)]
+        message: RegisterRequest,
+    },
     LoginRequest(LoginRequest),
     RenewToken {
         token: String,
@@ -428,10 +561,15 @@ pub enum MessageType {
         #[serde(flatten)]
         message: ListCreatedServersRequest,
     },
+    ListJoinedServers {
+        token: String,
+        #[serde(flatten)]
+        message: ListJoinedServersRequest,
+    },
     ListServerSpaces {
         token: String,
         #[serde(flatten)]
-        message: ListServerSpacesRequest,
+        message: ListServerSpaces,
     },
     JoinServer {
         token: String,
@@ -443,10 +581,16 @@ pub enum MessageType {
         #[serde(flatten)]
         message: LeaveServerRequest,
     },
-    WriteMessage {
+    SendMessage {
         token: String,
         #[serde(flatten)]
         message: WriteMessageRequest,
+    },
+    // TODO: add GetSerevrMessages
+    GetSpaceMessages {
+        token: String,
+        #[serde(flatten)]
+        message: GetSpaceMessagesRequest,
     },
 }
 
@@ -460,15 +604,6 @@ impl MessageType {
         postgres_client.login_user(username, password).await
     }
 
-    pub async fn register_user(
-        &self,
-        username: &str,
-        password: &str,
-        postgres_client: Arc<CustomPostgresClient>,
-    ) -> anyhow::Result<()> {
-        postgres_client.register_user(username, password).await
-    }
-
     // RwLock
     pub async fn process_v1(
         &self,
@@ -478,15 +613,8 @@ impl MessageType {
         match self {
             // NOTE: called "process" methods should return Response only upon sucess, otherwise,
             // it should return an Err with error description.
-            MessageType::RegisterRequest(RegisterRequest { username, password }) => {
-                // NOTE: can we pass the postgress and minio client over self instead?
-                match self
-                    .register_user(username, password, postgres_client)
-                    .await
-                {
-                    Ok(_) => Response::Ok(),
-                    Err(e) => Response::Error(e.to_string()),
-                }
+            MessageType::RegisterRequest { token, message } => {
+                process(message, token, postgres_client, s3_client).await
             }
             MessageType::LoginRequest(LoginRequest { username, password }) => {
                 match self.login_user(username, password, postgres_client).await {
@@ -495,58 +623,37 @@ impl MessageType {
                 }
             }
             MessageType::RenewToken { token, message } => {
-                match message.process(postgres_client, token).await {
-                    Ok(v) => v,
-                    Err(e) => Response::Error(e.to_string()),
-                }
+                process(message, token, postgres_client, s3_client).await
             }
             MessageType::CreateServer { token, message } => {
-                match message.process(postgres_client, s3_client, token).await {
-                    Ok(v) => v,
-                    Err(e) => Response::Error(e.to_string()),
-                }
+                process(message, token, postgres_client, s3_client).await
             }
             MessageType::CreateSpace { token, message } => {
-                match message.process(postgres_client, s3_client, token).await {
-                    Ok(v) => v,
-                    Err(e) => Response::Error(e.to_string()),
-                }
+                process(message, token, postgres_client, s3_client).await
             }
             MessageType::DeleteSpace { token, message } => {
-                match message.process(postgres_client, token).await {
-                    Ok(v) => v,
-                    Err(e) => Response::Error(e.to_string()),
-                }
-            }
-            MessageType::ListCreatedServers { token, message } => {
-                match message.process(postgres_client, token).await {
-                    Ok(v) => v,
-                    Err(e) => Response::Error(e.to_string()),
-                }
+                process(message, token, postgres_client, s3_client).await
             }
             MessageType::ListServerSpaces { token, message } => {
-                match message.process(postgres_client, token).await {
-                    Ok(v) => v,
-                    Err(e) => Response::Error(e.to_string()),
-                }
+                process(message, token, postgres_client, s3_client).await
+            }
+            MessageType::ListCreatedServers { token, message } => {
+                process(message, token, postgres_client, s3_client).await
+            }
+            MessageType::ListJoinedServers { token, message } => {
+                process(message, token, postgres_client, s3_client).await
             }
             MessageType::JoinServer { token, message } => {
-                match message.process(postgres_client, token).await {
-                    Ok(v) => v,
-                    Err(e) => Response::Error(e.to_string()),
-                }
+                process(message, token, postgres_client, s3_client).await
             }
             MessageType::LeaveServer { token, message } => {
-                match message.process(postgres_client, token).await {
-                    Ok(v) => v,
-                    Err(e) => Response::Error(e.to_string()),
-                }
+                process(message, token, postgres_client, s3_client).await
             }
-            MessageType::WriteMessage { token, message } => {
-                match message.process(postgres_client, token).await {
-                    Ok(v) => v,
-                    Err(e) => Response::Error(e.to_string()),
-                }
+            MessageType::SendMessage { token, message } => {
+                process(message, token, postgres_client, s3_client).await
+            }
+            MessageType::GetSpaceMessages { token, message } => {
+                process(message, token, postgres_client, s3_client).await
             }
         }
     }
@@ -582,9 +689,11 @@ pub enum Response {
     Ok(),
     Close(),
     ServerId(Uuid),
+    SpaceId(Uuid),
     Token(Token),
     Error(String),
     ServersList(Vec<Server>),
+    MessageList(Vec<Message>),
     SpacesList(Vec<Space>),
 }
 
@@ -597,17 +706,21 @@ impl From<anyhow::Error> for Response {
 impl Response {
     pub async fn send(
         &self,
-        write: &mut SplitSink<WebSocketStream<TcpStream>, Message>,
+        write: &mut SplitSink<WebSocketStream<TcpStream>, tungstenite::Message>,
     ) -> anyhow::Result<()> {
         if matches!(self, Self::Close()) {
             write.close().await?;
         } else if matches!(self, Self::Error(_)) {
             write
-                .send(Message::text(&serde_json::to_string_pretty(self)?))
+                .send(tungstenite::Message::text(&serde_json::to_string_pretty(
+                    self,
+                )?))
                 .await?;
         } else {
             write
-                .send(Message::text(&serde_json::to_string_pretty(self)?))
+                .send(tungstenite::Message::text(&serde_json::to_string_pretty(
+                    self,
+                )?))
                 .await?;
         }
         Ok(())
@@ -706,6 +819,35 @@ pub async fn spawn_ws_connection(
     Ok(())
 }
 
+pub trait Process {
+    async fn process(
+        &self,
+        postgres_client: Arc<CustomPostgresClient>,
+        _: Arc<CustomS3client>,
+        token: &str,
+    ) -> anyhow::Result<Response> {
+        if !postgres_client.token_exist_and_not_expired(token).await? {
+            return Err(anyhow!("Token does not exist or expired!"));
+        }
+        Ok(Response::Ok())
+    }
+}
+
+async fn process<T>(
+    message: &T,
+    token: &str,
+    postgres_client: Arc<CustomPostgresClient>,
+    s3_client: Arc<CustomS3client>,
+) -> Response
+where
+    T: Process,
+{
+    match message.process(postgres_client, s3_client, token).await {
+        Ok(v) => v,
+        Err(e) => Response::Error(e.to_string()),
+    }
+}
+
 async fn handle_ws_connection(
     mut stream: TcpStream,
     s3_client: Arc<CustomS3client>,
@@ -718,7 +860,7 @@ async fn handle_ws_connection(
 
     while let Some(message) = read.next().await {
         match message? {
-            Message::Text(sbuf) => match serde_json::from_str(&sbuf) {
+            tungstenite::Message::Text(sbuf) => match serde_json::from_str(&sbuf) {
                 Ok(VersionedMessage { version, payload }) => {
                     if version == 1.0 {
                         payload
@@ -734,7 +876,7 @@ async fn handle_ws_connection(
                 }
                 Err(e) => Response::from(anyhow::anyhow!(e)).send(&mut write).await?,
             },
-            Message::Close(_) => Response::close().send(&mut write).await?,
+            tungstenite::Message::Close(_) => Response::close().send(&mut write).await?,
             _ => break,
         }
     }

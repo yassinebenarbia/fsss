@@ -1,3 +1,6 @@
+// TODO: add message type for the response
+// TODO: add a message id appended to the response that will tag it
+// this id should be sent intially by the emitter 
 use ::postgres::NoTls;
 use clap::Parser;
 use std::sync::Arc;
