@@ -1,0 +1,10 @@
+{
+  "version": 1.0,
+  "payload": {
+    "GetSpaceMessages": {
+      "token": "57pwWmUBZ280yPmLdlK8BvHI9xyIb1LeKk4LJW2fdo168OEFR833Uq3L6mv5KhH1",
+      "server_id": "14fd67b5-a85e-4597-ba33-6b7c948210ac",
+      "space_id":  "6e7db902-997e-4068-833e-be8e9b7f7f58"
+    }
+  }
+}

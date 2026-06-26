@@ -1,0 +1,9 @@
+{
+  "version": 1.0,
+  "payload": {
+    "SubscribeToServer": {
+      "token": "v08xKnKJQGtTyAHC8UG7eLgLyO5WBroaIN0QNB1GgYMcNrI9mUQzwd3myWv5impe",
+      "server_id": "f3aa51fb-a0b4-482c-a203-6724a50e9358"
+    }
+  }
+}

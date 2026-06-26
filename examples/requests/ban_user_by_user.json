@@ -1,0 +1,9 @@
+{
+  "version": 1.0,
+  "payload": {
+    "BanUserFromServer": {
+      "token": "rCosMAm3Sj2mZmVMDDW21Cl3j0U7xeAivIek7YrJ04hr1xlnmwjGzMY2Qkx978gu",
+      "banned_id": ""
+    }
+  }
+}

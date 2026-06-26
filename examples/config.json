@@ -1,0 +1,26 @@
+{
+  "minio": {
+    "url": "http://127.0.0.1:9000",
+    "username": "admin",
+    "password": "password"
+  },
+  "postgres": {
+    "port": 5431,
+    "host": "localhost",
+    "username": "postgres",
+    "password": "postgres",
+    "dbname": "mydb"
+  },
+  "redis": {
+    "host": "localhost",
+    "port": 6379
+  },
+  "websocket": {
+    "host": "127.0.0.1",
+    "port": 8081
+  },
+  "http": {
+    "host": "127.0.0.1",
+    "port": 3000
+  }
+}

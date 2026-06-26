@@ -1,0 +1,9 @@
+{
+  "version": 1.0,
+  "payload": {
+    "ListServerMembers": {
+      "token": "kkZ6lKMd7WSEJcZZjzeDnWVKw9E5Ajx7y8yLFiN7U1JIUgsrZZOrnUc3vu0yda46",
+      "server": "62c8f66f-53ca-41aa-ac23-4060877ca3af"
+    }
+  }
+}

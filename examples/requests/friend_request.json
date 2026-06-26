@@ -1,0 +1,10 @@
+{
+  "version": 1.0,
+  "payload": {
+    "FriendRequest": {
+      "token": "IFgdoBFs1TFJoSiZCEldlxmsAgzGL25d54Tl6rrHSkmvooMZLWXGHEZG3NDdJD2f",
+      "requested_id": "774a39ac-2d37-403f-90d7-e5dfc4d20131",
+      "message": "Hey, it's me Jacob!"
+    }
+  }
+}

@@ -1,0 +1,57 @@
+# Use postgres/example user/password credentials
+
+services:
+  bucket:
+    image: minio/minio
+    command: server /tmp/minio --console-address :9001
+    ports:
+      - 9001:9001
+      - 9000:9000
+    environment:
+      MINIO_ACCESS_KEY: admin
+      MINIO_SECRET_KEY: password
+
+  postgres:
+    image: postgres:latest
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: mydb
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - 5431:5432
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis-${VERSION_TAG:-prod}
+    restart: always
+    ports:
+      - 6379:6379
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+    command: ["redis-server", "--bind", "0.0.0.0"]
+
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+
+  adminer:
+    image: adminer
+    restart: always
+    environment:
+      ADMINER_NO_TIMEOUT: 1
+    ports:
+      - 8080:8080
+
+  chartdb:
+    image: ghcr.io/chartdb/chartdb:latest
+    ports:
+      - "8083:80"
+
+volumes:
+  postgres_data:
+  pgdata:

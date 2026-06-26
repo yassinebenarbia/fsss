@@ -1,0 +1,10 @@
+{
+  "version": 1.0,
+  "payload": {
+    "UnbanUserFromServer": {
+      "token": "EfC0H4VxX7Lgw6Twwcfz4UAGntDa043y50shS9nvsrmSJ121sNDShnbI01lrzxLy",
+      "server_id": "62c8f66f-53ca-41aa-ac23-4060877ca3af",
+      "banned_id": "b4aa96eb-6389-4343-b906-3c8f8a191af2"
+    }
+  }
+}

@@ -1,0 +1,62 @@
+use std::sync::Arc;
+
+use anyhow::anyhow;
+use chrono::Utc;
+use futures_util::FutureExt;
+use serde::{Deserialize, Serialize};
+
+use crate::{
+    api::{AsNotification, LogoutNotification, OriginRequestType, Process, ResponseType},
+    postgres::CustomPostgresClient,
+    redis::{ChannelPath, CustomRedisClient, CustomRedisPubSink},
+    s3::CustomS3client,
+};
+
+#[derive(Deserialize, Serialize, Debug)]
+pub struct LogoutRequest {}
+
+
+impl Process for LogoutRequest {
+    async fn process(
+        &self,
+        postgres_client: Arc<CustomPostgresClient>,
+        _: Arc<CustomS3client>,
+        pub_sink: &mut CustomRedisPubSink,
+        redis_client: &mut Arc<CustomRedisClient>,
+        token: &str,
+    ) -> anyhow::Result<ResponseType> {
+        if !postgres_client.token_exist_and_not_expired(token).await? {
+            return Err(anyhow!("Token does not exist or expired!"));
+        }
+
+        let user = postgres_client
+            .get_user_by_token(token)
+            .await
+            .map_err(|e| anyhow!("User does not exist! {e}"))?;
+
+        let notification =
+            LogoutNotification::new(Utc::now().naive_utc(), token.to_string(), user.clone());
+
+        redis_client
+            .publish_notification(
+                &notification.as_notification(),
+                ChannelPath::new_dm_path(&user.id),
+            )
+            .await?;
+
+        pub_sink
+            .unsubscribe_all()
+            .then(|result| async {
+                result?;
+                postgres_client.invalidate_token(token).await
+            })
+            .await
+            .map(|_| ResponseType::Ok {
+                original_request: self.original_type(),
+            })
+    }
+
+    fn original_type(&self) -> OriginRequestType {
+        OriginRequestType::LogoutRequest
+    }
+}

@@ -1,0 +1,10 @@
+{
+  "version": 1.0,
+  "payload": {
+    "ListServerSpaces": {
+      "token": "sGoujS4Arq5W8sG0tMmHooMRbsCt3dltnqPV2uzBTTzs4yBCxwZYn2z6PnTUGUZR",
+      "server_id": "4e6f7146-080d-4460-a644-80b0ceb6a165",
+      "space_id": "1c2346ce-7d9c-42db-ba5e-90abbf77d260"
+    }
+  }
+}

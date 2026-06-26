@@ -1,0 +1,9 @@
+{
+  "version": 1.0,
+  "payload": {
+    "GetServerBanList": {
+      "token": "EfC0H4VxX7Lgw6Twwcfz4UAGntDa043y50shS9nvsrmSJ121sNDShnbI01lrzxLy",
+      "server_id": "62c8f66f-53ca-41aa-ac23-4060877ca3af"
+    }
+  }
+}

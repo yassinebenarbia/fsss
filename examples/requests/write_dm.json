@@ -1,0 +1,11 @@
+{
+  "version": 1.0,
+  "payload": {
+    "SendDM": {
+      "token": "57pwWmUBZ280yPmLdlK8BvHI9xyIb1LeKk4LJW2fdo168OEFR833Uq3L6mv5KhH1",
+      "receiver": "...".
+      "message_kind": "Text",
+      "message_content": "dududududu"
+    }
+  }
+}

@@ -1,10 +1,6 @@
-use std::{net::IpAddr, str::FromStr, sync::Arc};
+use std::sync::Arc;
 
-use aws_config::{SdkConfig, meta::region::RegionProviderChain};
-use aws_sdk_s3::{
-    config::{Credentials, SharedCredentialsProvider},
-    primitives::ByteStream,
-};
+use aws_sdk_s3::primitives::ByteStream;
 
 use axum::{
     Extension, Router,
@@ -18,32 +14,27 @@ use axum_extra::{
     TypedHeader,
     headers::{Authorization, authorization::Bearer},
 };
-use futures_util::{TryFutureExt, TryStreamExt};
-use minio::s3::Client as MinioClient;
-use std::net::SocketAddr;
+use chrono::Utc;
 use tokio::net::TcpListener;
-use uuid::Uuid;
 
 use crate::{
-    config::{Config, S3},
+    api::{Notification, ServerId, ServerMessageNotification, SpaceId},
+    config::Config,
     postgres::CustomPostgresClient,
+    redis::{ChannelPath, CustomRedisClient},
     s3::CustomS3client,
 };
-
-#[derive(serde::Serialize, serde::Deserialize, Clone)]
-struct User {
-    token: uuid::Uuid,
-}
 
 pub async fn spawn_http_connection(
     config: &Config,
     s3_client: Arc<CustomS3client>,
     postgres_client: Arc<CustomPostgresClient>,
+    redis_client: Arc<CustomRedisClient>,
 ) -> anyhow::Result<()> {
     let app = Router::new()
         .route(
             "/upload",
-            post(upload).with_state((s3_client, postgres_client.clone())),
+            post(upload).with_state((redis_client, s3_client, postgres_client.clone())),
         )
         .route_layer(middleware::from_fn_with_state(
             postgres_client.clone(),
@@ -59,7 +50,11 @@ pub async fn spawn_http_connection(
 // #[axum::debug_handler]
 async fn upload<'a>(
     Extension(token): Extension<String>,
-    State((s3_client, postgres_client)): State<(Arc<CustomS3client>, Arc<CustomPostgresClient>)>,
+    State((redis_client, s3_client, postgres_client)): State<(
+        Arc<CustomRedisClient>,
+        Arc<CustomS3client>,
+        Arc<CustomPostgresClient>,
+    )>,
     mut multipart: Multipart,
 ) -> String {
     let mut server_id = String::new();
@@ -89,9 +84,11 @@ async fn upload<'a>(
                             .get_user_id_from_token(&token)
                             .await
                             .unwrap();
+                        let server_id = ServerId::try_from(&server_id).unwrap();
+                        let space_id = SpaceId::try_from(&space_id).unwrap();
 
                         if !postgres_client
-                            .is_joined(&server_id, user_id)
+                            .is_joined(&server_id, &user_id)
                             .await
                             .unwrap()
                         {
@@ -123,11 +120,34 @@ async fn upload<'a>(
                             Ok(_) => {
                                 postgres_client
                                     .write_file_message(
-                                        &Uuid::from_str(&server_id).unwrap(),
-                                        &Uuid::from_str(&space_id).unwrap(),
-                                        user_id,
+                                        &server_id,
+                                        &space_id,
+                                        &user_id,
                                         &crate::postgres::MessageKind::FILE,
                                         &filename,
+                                    )
+                                    .await
+                                    .unwrap();
+                                let user = postgres_client.get_user_by_token(&token).await.unwrap();
+
+                                let notificatoin =
+                                    Notification::ServerMessage(ServerMessageNotification::new(
+                                        *server_id.inner(),
+                                        *space_id.inner(),
+                                        filename,
+                                        user,
+                                        crate::postgres::MessageKind::FILE,
+                                        Utc::now().naive_utc(),
+                                    ));
+
+                                redis_client
+                                    .publish_notification(
+                                        &notificatoin,
+                                        ChannelPath::new_server_path(
+                                            server_id,
+                                            None::<&str>,
+                                            None::<&str>,
+                                        ),
                                     )
                                     .await
                                     .unwrap();

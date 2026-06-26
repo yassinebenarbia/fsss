@@ -1,0 +1,11 @@
+{
+  "version": 1.0,
+  "payload": {
+    "SearchUser": {
+      "token": "D68jqF9dPcp2f2nuEchBQJIsVKlGxa9RYbX9aiD1744dUcPsHz4VuojWoHR7zrNO",
+      "query": "umg3",
+      "field": "Name",
+      "reversed": false
+    }
+  }
+}
