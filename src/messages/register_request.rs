@@ -42,7 +42,7 @@ impl Process for RegisterRequest {
                             self.nickname.clone(),
                             self.bio.clone(),
                             None,
-                            user_id,
+                            Some(user_id),
                         ))
                         .await?;
                 }

@@ -65,7 +65,7 @@ impl Process for BanUserFromServer {
             .await?;
 
         Ok(ResponseType::Ok {
-            original_request: self.original_type(),
+            original_request_type: self.original_type(),
         })
     }
 }

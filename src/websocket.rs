@@ -472,7 +472,7 @@ pub struct UserMetadata {
     pub bio: Option<String>,
     /// UUID points to the pfp in the pool
     pub pfp: Option<Uuid>,
-    pub user_ban_id: Uuid,
+    pub user_ban_id: Option<Uuid>,
 }
 
 impl UserMetadata {
@@ -481,7 +481,7 @@ impl UserMetadata {
         nickname: Option<String>,
         bio: Option<String>,
         pfp: Option<Uuid>,
-        user_ban_id: Uuid,
+        user_ban_id: Option<Uuid>,
     ) -> Self {
         Self {
             metadata_id: user_id,
@@ -509,7 +509,7 @@ impl TryFrom<postgres::Row> for User {
         let nickname = value.get::<&str, Option<String>>("nickname");
         let bio = value.get::<&str, Option<String>>("bio");
         let pfp = value.get::<&str, Option<Uuid>>("pfp");
-        let user_ban_id = value.get::<&str, Uuid>("user_ban_id");
+        let user_ban_id = value.get::<&str, Option<Uuid>>("user_ban_id");
         if nickname.is_none() && bio.is_none() {
             Ok(User::new(name, user_id, None))
         } else {
@@ -543,14 +543,14 @@ pub enum ResponseType {
         notification: Notification,
     },
     MessageSent {
-        original_request: OriginRequestType,
+        original_request_type: OriginRequestType,
         message_id: Uuid,
     },
     Ok {
-        original_request: OriginRequestType,
+        original_request_type: OriginRequestType,
     },
     ServerJoined {
-        original_request: OriginRequestType,
+        original_request_type: OriginRequestType,
         spaces: Vec<Space>,
     },
     Close(),
@@ -587,24 +587,24 @@ pub enum ResponseType {
         spaces: Vec<Space>,
     },
     User {
-        original_request: OriginRequestType,
+        original_request_type: OriginRequestType,
         user: User,
     },
     Users {
-        original_request: OriginRequestType,
+        original_request_type: OriginRequestType,
         users: Vec<User>,
     },
     FriendRequestSent {
-        original_request: OriginRequestType,
+        original_request_type: OriginRequestType,
         request_id: Uuid,
         requested_id: Uuid,
     },
     FriendRequests {
-        original_request: OriginRequestType,
+        original_request_type: OriginRequestType,
         requests: Vec<FriendRequest>,
     },
     FriendsList {
-        original_request: OriginRequestType,
+        original_request_type: OriginRequestType,
         friends: Vec<User>,
     },
 }
@@ -947,7 +947,7 @@ mod tests {
     #[test]
     fn test_response() {
         let s = serde_json::to_string_pretty(&ResponseType::Ok {
-            original_request: crate::websocket::OriginRequestType::SendMServerMessage,
+            original_request_type: crate::websocket::OriginRequestType::SendMServerMessage,
         })
         .unwrap();
         println!("{s}");
@@ -1067,7 +1067,7 @@ pub trait Process {
         }
 
         Ok(ResponseType::Ok {
-            original_request: self.original_type(),
+            original_request_type: self.original_type(),
         })
     }
 

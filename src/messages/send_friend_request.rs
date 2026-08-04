@@ -70,7 +70,7 @@ impl Process for SendFriendRequest {
             .await?;
 
         Ok(ResponseType::FriendRequestSent {
-            original_request: self.original_type(),
+            original_request_type: self.original_type(),
             requested_id: requested_id.inner_clone(),
             request_id,
         })
@@ -79,7 +79,7 @@ impl Process for SendFriendRequest {
 
 impl UserToUser for SendFriendRequest {
     fn receiver_id(&self) -> anyhow::Result<UserId> {
-        Ok(UserId::try_from(&self.requested_id)?)
+        Ok(UserId::try_from(&self.requested_id).unwrap())
     }
 
     async fn sender_id(
@@ -87,7 +87,7 @@ impl UserToUser for SendFriendRequest {
         token: &str,
         postgres_client: &Arc<CustomPostgresClient>,
     ) -> anyhow::Result<UserId> {
-        let user = postgres_client.get_user_by_token(token).await?;
+        let user = postgres_client.get_user_by_token(token).await.unwrap();
         Ok(UserId::from(&user.id))
     }
 }

@@ -51,10 +51,13 @@ impl Process for JudgeFriendRequest {
         let request = postgres_client
             .get_friend_request(&judged_request_id)
             .await?;
+
         if self.accept {
             postgres_client.accept_friend_request(&request).await?;
+            println!("firend request with id {judged_request_id} accepted");
         } else {
             postgres_client.reject_friend_request(&request).await?;
+            println!("firend request with id {judged_request_id} rejected");
         }
 
         let notification = FriendRequestJudgementNotification::new(judged_request_id, self.accept);
@@ -65,8 +68,10 @@ impl Process for JudgeFriendRequest {
             )
             .await?;
 
+        println!("Notification published");
+
         Ok(ResponseType::Ok {
-            original_request: self.original_type(),
+            original_request_type: self.original_type(),
         })
     }
 }

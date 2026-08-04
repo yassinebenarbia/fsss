@@ -36,7 +36,7 @@ impl Process for LeaveServerRequest {
             .leave_server(&self.server_id, &user_id)
             .await
             .map(|_| ResponseType::Ok {
-                original_request: self.original_type(),
+                original_request_type: self.original_type(),
             })
     }
 

@@ -41,7 +41,7 @@ impl Process for DeleteSpaceRequest {
             .delete_space(&self.space_id, &self.server_id)
             .await
             .map(|_| ResponseType::Ok {
-                original_request: self.original_type(),
+                original_request_type: self.original_type(),
             })
     }
 

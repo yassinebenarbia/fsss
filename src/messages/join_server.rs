@@ -47,7 +47,7 @@ impl Process for JoinServerRequest {
             })
             .await
             .map(|spaces| ResponseType::ServerJoined {
-                original_request: self.original_type(),
+                original_request_type: self.original_type(),
                 spaces,
             })
     }

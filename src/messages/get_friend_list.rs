@@ -39,7 +39,7 @@ impl Process for GetFriendList {
         let friends = postgres_client.get_friends(&user.id, &limit).await?;
 
         Ok(ResponseType::FriendsList {
-            original_request: self.original_type(),
+            original_request_type: self.original_type(),
             friends,
         })
     }

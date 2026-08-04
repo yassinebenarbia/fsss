@@ -40,7 +40,7 @@ impl Process for DeleteServerRequest {
             .delete_server(&self.server)
             .await
             .map(|_| ResponseType::Ok {
-                original_request: self.original_type(),
+                original_request_type: self.original_type(),
             })
     }
 

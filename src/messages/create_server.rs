@@ -24,6 +24,7 @@ impl Process for CreateServerRequest {
         _: &mut Arc<CustomRedisClient>,
         token: &str,
     ) -> anyhow::Result<ResponseType> {
+        // TODO: check if server exist
         if !postgres_client.token_exist_and_not_expired(token).await? {
             return Err(anyhow!("Token does not exist or expired!"));
         }

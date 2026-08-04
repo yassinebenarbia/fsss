@@ -37,11 +37,11 @@ impl Process for GetFriendRequests {
         let limit = self.limit.unwrap_or(20);
 
         let requests = postgres_client
-            .get_friend_requests(&user.id, &limit)
+            .get_incoming_friend_requests(&user.id, &limit)
             .await?;
 
         Ok(ResponseType::FriendRequests {
-            original_request: self.original_type(),
+            original_request_type: self.original_type(),
             requests,
         })
     }

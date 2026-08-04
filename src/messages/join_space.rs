@@ -16,13 +16,13 @@ pub struct JoinSpaceRequest {
 
 impl Process for JoinSpaceRequest {
     fn original_type(&self) -> crate::api::OriginRequestType {
-        todo!()
+        crate::api::OriginRequestType::JoinSpace
     }
 }
 
 impl JoinSpaceRequest {
     pub async fn register_user_to_space(&self) -> anyhow::Result<()> {
-        todo!()
+        Ok(())
     }
 }
 

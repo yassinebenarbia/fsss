@@ -48,7 +48,7 @@ impl Process for LeaveSpaceRequest {
             .unsubscribe(user_id, &self.server_id, &self.space_id)
             .await
             .map(|_| ResponseType::Ok {
-                original_request: self.original_type(),
+                original_request_type: self.original_type(),
             })
     }
 

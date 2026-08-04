@@ -46,7 +46,7 @@ impl Process for GetServerBanList {
         let users = postgres_client.banned_users(&self.server_id).await?;
 
         Ok(ResponseType::Users {
-            original_request: self.original_type(),
+            original_request_type: self.original_type(),
             users,
         })
     }

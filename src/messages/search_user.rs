@@ -1,12 +1,13 @@
 use std::sync::Arc;
 
 use anyhow::anyhow;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::Error};
 
 use crate::{
     api::{OriginRequestType, Process, ResponseType},
     postgres::CustomPostgresClient,
     redis::{CustomRedisClient, CustomRedisPubSink},
+    result::error::ServerError,
     s3::CustomS3client,
 };
 
@@ -47,7 +48,7 @@ impl Process for SearchUser {
             .await?;
 
         Ok(ResponseType::Users {
-            original_request: self.original_type(),
+            original_request_type: self.original_type(),
             users,
         })
     }

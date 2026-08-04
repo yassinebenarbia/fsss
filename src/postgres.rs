@@ -250,20 +250,30 @@ impl CustomPostgresClient {
 
         let sfield = match field {
             // SearchField::ID => format!("user_id = $1"),
-            SearchField::Name => format!("name = $1"),
-            SearchField::Nickname => format!("nickname = $1"),
-            SearchField::Bio => format!("bio = $1"),
+            SearchField::Name => format!("name Like $1"),
+            SearchField::Nickname => format!("nickname Like $1"),
+            SearchField::Bio => format!("bio Like $1"),
         };
 
         let squery = format!(
-            "SELECT name, users.id, nickname, bio FROM users LEFT JOIN user_metadata ON user_metadata.id = users.id WHERE {} LIMIT $2;",
+            "SELECT users.name, users.id, user_metadata.nickname, user_metadata.bio, user_metadata.pfp, user_metadata.user_ban_id FROM users LEFT JOIN user_metadata ON user_metadata.id = users.id WHERE {} LIMIT $2;",
             sfield
         );
         println!("{}", squery);
 
         let rows = self
             .postgres_client
-            .query(&squery, &[&query, &limit])
+            .query(
+                &squery,
+                &[
+                    &if query.is_empty() {
+                        query.to_string()
+                    } else {
+                        format!("%{}%", query)
+                    },
+                    &limit,
+                ],
+            )
             .await?;
         println!("fuh");
 
@@ -807,6 +817,7 @@ ORDER BY dm.sent_time DESC LIMIT $3;",
                 "SELECT id, password_hash FROM users WHERE name = $1;",
                 &[&username],
             )
+            // TODO: map the message error?
             .await?;
 
         for row in rows {
@@ -891,14 +902,18 @@ ORDER BY dm.sent_time DESC LIMIT $3;",
     }
 
     pub async fn friend_request_exist(&self, id: &Uuid) -> anyhow::Result<bool> {
-        Ok(!self
+        Ok(self
             .postgres_client
-            .query_one("SELECT id FROM friend_request WHERE id = $1", &[id])
+            .query_opt("SELECT id FROM friend_request WHERE id = $1", &[id])
             .await?
-            .is_empty())
+            .is_some())
     }
 
     pub async fn delete_friend_request(&self, id: &Uuid) -> anyhow::Result<()> {
+        println!(
+            "{}",
+            format!("DELETE FROM friend_request WHERE id = '{}'", id)
+        );
         self.postgres_client
             .execute("DELETE FROM friend_request WHERE id = $1", &[id])
             .await?;
@@ -909,17 +924,17 @@ ORDER BY dm.sent_time DESC LIMIT $3;",
     pub async fn make_friends(&self, lhs: &Uuid, rhs: &Uuid) -> anyhow::Result<()> {
         self.postgres_client
             .execute(
-                "INSERT INTO friend_typle (rhs, lhs) VALUES ($1, $2)",
-                &[lhs, rhs],
+                "INSERT INTO friend_tuple (rhs, lhs) VALUES ($1, $2)",
+                &[rhs, lhs],
             )
             .await?;
         Ok(())
     }
 
     pub async fn accept_friend_request(&self, request: &FriendRequest) -> anyhow::Result<()> {
-        self.delete_friend_request(&request.request_id).await?;
+        self.delete_friend_request(&request.request_id).await.unwrap();
         self.make_friends(&request.requester_id, &request.requested_id)
-            .await?;
+            .await.unwrap();
         Ok(())
     }
 
@@ -933,7 +948,7 @@ ORDER BY dm.sent_time DESC LIMIT $3;",
         Ok(())
     }
 
-    pub async fn get_friend_requests(
+    pub async fn get_incoming_friend_requests(
         &self,
         user_id: &Uuid,
         limit: &i64,
@@ -941,14 +956,14 @@ ORDER BY dm.sent_time DESC LIMIT $3;",
         println!(
             "{}",
             format!(
-                "SELECT id, requester_id, requested_id, request_time, requested_message FROM friend_request WHERE requested_id = '{}' LIMIT {}",
+                "SELECT id, requester, requested, request_time, request_message FROM friend_request WHERE requested = '{}' LIMIT {}",
                 user_id, limit
             )
         );
         let rows = self
             .postgres_client
             .query(
-                "SELECT requester, requested, request_time, request_message FROM friend_request WHERE requested = $1 LIMIT $2",
+                "SELECT id, requester, requested, request_time, request_message FROM friend_request WHERE requested = $1 LIMIT $2",
                 &[&user_id, &limit],
             )
             .await?;
@@ -958,7 +973,9 @@ ORDER BY dm.sent_time DESC LIMIT $3;",
             let id = row.get::<&str, Uuid>("id");
             let requested_id = row.get::<&str, Uuid>("requested");
             let requester_id = row.get::<&str, Uuid>("requester");
-            let request_time = row.get::<&str, NaiveDateTime>("request_time");
+            let request_time = row
+                .try_get::<&str, DateTime<Utc>>("request_time")?
+                .naive_utc();
             let request_message = row.get::<&str, Option<String>>("request_message");
 
             requests.push(FriendRequest::new(
@@ -974,27 +991,48 @@ ORDER BY dm.sent_time DESC LIMIT $3;",
     }
 
     pub async fn get_friend_request(&self, id: &Uuid) -> anyhow::Result<FriendRequest> {
+        println!(
+            "{}",
+            format!(
+                "SELECT id, requester, requested, request_time, request_message FROM friend_request WHERE id = '{}'",
+                id
+            )
+        );
+
         let row = self
             .postgres_client
-            .query_one(
-                "SELECT id, requester_id, requested_id, request_time, requested_message FROM friend_request WHERE id = $1",
+            .query_opt(
+                "SELECT id, requester, requested, request_time, request_message FROM friend_request WHERE id = $1",
                 &[id],
             )
-            .await?;
+            .await.unwrap();
 
-        let id = row.get::<&str, Uuid>("id");
-        let requested_id = row.get::<&str, Uuid>("requested_id");
-        let requester_id = row.get::<&str, Uuid>("requester_id");
-        let request_time = row.get::<&str, NaiveDateTime>("request_time");
-        let request_message = row.get::<&str, Option<String>>("request_message");
+        match row {
+            Some(row) => {
+                let id = row.get::<&str, Uuid>("id");
+                let requested_id = row.get::<&str, Uuid>("requested");
+                println!("requested: {:?}", requested_id);
+                let requester_id = row.get::<&str, Uuid>("requester");
+                println!("requester: {:?}", requester_id);
+                let request_time = row
+                    .try_get::<&str, DateTime<Utc>>("request_time")?
+                    .naive_utc();
+                println!("{:?}", request_time);
+                let request_message = row.get::<&str, Option<String>>("request_message");
+                println!("{:?}", request_message);
 
-        Ok(FriendRequest::new(
-            id,
-            requester_id,
-            requested_id,
-            request_time,
-            request_message,
-        ))
+                Ok(FriendRequest::new(
+                    id,
+                    requester_id,
+                    requested_id,
+                    request_time,
+                    request_message,
+                ))
+            }
+            None => {
+                return Err(anyhow::anyhow!("No friend request found"));
+            }
+        }
     }
 
     pub async fn get_user_id_from_token(&self, token: &str) -> anyhow::Result<UserId> {
@@ -1428,14 +1466,14 @@ ORDER BY dm.sent_time DESC LIMIT $3;",
     }
 
     pub async fn get_or_create_server_ban_id(&self, server_id: &ServerId) -> anyhow::Result<Uuid> {
-        let row = self.postgres_client.query_one(
+        let row = self.postgres_client.query_opt(
             "select server_bans_id from server_metadata join servers on servers.metadata = servers.id AND = $1;",
             &[server_id.inner()],
-        ).await;
+        ).await?;
 
         match row {
-            Ok(row) => return Ok(row.get::<&str, Uuid>("banned_user_id")),
-            Err(_) => {
+            Some(row) => return Ok(row.get::<&str, Uuid>("banned_user_id")),
+            None => {
                 let metadata = &ServerMetadata::new(Uuid::new_v4(), Uuid::new_v4(), None);
                 self.update_server_metadata(server_id, metadata).await?;
                 return Ok(metadata.server_ban_id.clone());
@@ -1444,32 +1482,33 @@ ORDER BY dm.sent_time DESC LIMIT $3;",
     }
 
     pub async fn get_or_create_user_ban_id(&self, user_id: &UserId) -> anyhow::Result<Uuid> {
-        let row = self.postgres_client.query_one(
+        let row = self.postgres_client.query_opt(
             "select user_ban_id from server_metadata join users on users.id = user_metadata.id AND = $1;",
             &[user_id.inner()],
-        ).await;
+        ).await?;
 
         match row {
-            Ok(row) => return Ok(row.get::<&str, Uuid>("user_ban_id")),
-            Err(_) => {
+            Some(row) => return Ok(row.get::<&str, Uuid>("user_ban_id")),
+            None => {
+                let ban_id = Uuid::new_v4();
                 let metadata =
-                    &UserMetadata::new(user_id.inner_clone(), None, None, None, Uuid::new_v4());
+                    &UserMetadata::new(user_id.inner_clone(), None, None, None, Some(ban_id));
                 self.update_user_metadata(metadata).await?;
-                return Ok(metadata.user_ban_id.clone());
+                return Ok(ban_id.clone());
             }
         }
     }
 
     #[allow(unused)]
     pub async fn get_server_ban_id(&self, server_id: &Uuid) -> anyhow::Result<Option<Uuid>> {
-        let row = self.postgres_client.query_one(
+        let row = self.postgres_client.query_opt(
             "select server_bans_id from server_metadata join servers on servers.metadata = servers.id AND = $1;",
             &[server_id],
-        ).await;
+        ).await?;
 
         match row {
-            Ok(row) => return Ok(row.get::<&str, Option<Uuid>>("banned_user_id")),
-            Err(_) => return Ok(None),
+            Some(row) => return Ok(row.get::<&str, Option<Uuid>>("banned_user_id")),
+            None => return Ok(None),
         }
     }
 

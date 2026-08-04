@@ -38,7 +38,7 @@ impl Process for GetUserDetails {
         let user = postgres_client.get_user_by_id(&self.user_id).await?;
 
         Ok(ResponseType::User {
-            original_request: self.original_type(),
+            original_request_type: self.original_type(),
             user: user,
         })
     }

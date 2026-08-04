@@ -64,7 +64,7 @@ impl Process for WriteDM {
             })
             .await
             .map(|message_id| ResponseType::MessageSent {
-                original_request: self.original_type(),
+                original_request_type: self.original_type(),
                 message_id,
             })
     }
