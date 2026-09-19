@@ -31,8 +31,6 @@ use crate::messages::write_message::WriteMessageRequest;
 
 pub struct InternalUser {
     pub id: UserId,
-    pub name: String,
-    pub password_hash: String,
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone)]
@@ -96,10 +94,10 @@ pub enum MessageKind {
     FILE,
 }
 
-impl From<&crate::websocket::MessageKind> for MessageKind {
-    fn from(value: &crate::api::MessageKind) -> Self {
+impl From<&crate::websocket::TextMessageKind> for MessageKind {
+    fn from(value: &crate::api::TextMessageKind) -> Self {
         match value {
-            crate::api::MessageKind::Text | crate::api::MessageKind::Markdown => Self::TEXT,
+            crate::api::TextMessageKind::Text | crate::api::TextMessageKind::Markdown => Self::TEXT,
         }
     }
 }
@@ -293,6 +291,19 @@ impl CustomPostgresClient {
         Ok(self.is_admin(&server_id, user_id).await?)
     }
 
+    // TODO: useful to know who banned who
+    #[allow(unused)]
+    pub async fn lhs_is_banned_by_rhs(&self, lhs: &UserId, rhs: &UserId) -> anyhow::Result<bool> {
+        todo!()
+    }
+
+    // TODO: useful to know who banned who
+    #[allow(unused)]
+    pub async fn rhs_is_banned_by_lhs(&self, lhs: &UserId, rhs: &UserId) -> anyhow::Result<bool> {
+        todo!()
+    }
+
+    /// returns `true` if one of user banned the other, `false` otherwise
     pub async fn either_is_banned(
         &self,
         banner_user_id: &UserId,
@@ -429,6 +440,7 @@ impl CustomPostgresClient {
         Ok(server_id)
     }
 
+    #[allow(unused)]
     pub async fn create_empty_space(
         &self,
         name: &str,
@@ -516,6 +528,7 @@ impl CustomPostgresClient {
         Ok(())
     }
 
+    #[allow(unused)]
     pub async fn delete_space_by_id(&self, id: &str) -> anyhow::Result<()> {
         self.postgres_client
             .execute("DELETE FROM space WHERE id = $1;", &[&Uuid::from_str(id)?])
@@ -543,6 +556,7 @@ impl CustomPostgresClient {
             .ne(&0))
     }
 
+    #[allow(unused)]
     async fn message_exist(&self, id: &Uuid) -> anyhow::Result<bool> {
         let locked_postgres = self.postgres_client.clone();
         Ok(locked_postgres
@@ -578,13 +592,7 @@ impl CustomPostgresClient {
 
         let id: Uuid = row.get::<usize, Uuid>(0);
         let id = UserId::from(id);
-        let name: String = row.get::<usize, String>(1);
-        let password_hash: String = row.get::<usize, String>(2);
-        Ok(InternalUser {
-            id,
-            name,
-            password_hash,
-        })
+        Ok(InternalUser { id })
     }
 
     pub async fn get_user_by_id(&self, id: &Uuid) -> anyhow::Result<User> {
@@ -697,14 +705,17 @@ impl CustomPostgresClient {
         Ok(())
     }
 
+    #[allow(unused)]
     pub async fn destroy_token(&self, token: &Token) -> anyhow::Result<()> {
         todo!()
     }
 
+    #[allow(unused)]
     pub async fn remove_user(&self, username: &str, password: &str) -> anyhow::Result<()> {
         todo!()
     }
 
+    #[allow(unused)]
     pub async fn logout_user(&self, username: &str, password: &str) -> anyhow::Result<()> {
         todo!()
     }
@@ -832,10 +843,6 @@ ORDER BY dm.sent_time DESC LIMIT $3;",
         Err(anyhow!("Wrong username or password"))
     }
 
-    pub async fn get_or_create_token(&self, id: i64) -> anyhow::Result<Token> {
-        todo!()
-    }
-
     #[allow(unused)]
     pub async fn get_token_by_id(&self, id: i64) -> anyhow::Result<Token> {
         let rows = self
@@ -846,7 +853,7 @@ ORDER BY dm.sent_time DESC LIMIT $3;",
             )
             .await?;
 
-        for row in rows {
+        if let Some(row) = rows.into_iter().next() {
             let token: String = row.get::<usize, String>(0);
             let creation_time: chrono::DateTime<Utc> = row.get::<usize, chrono::DateTime<Utc>>(1);
             let expiration_time: chrono::DateTime<Utc> = row.get::<usize, chrono::DateTime<Utc>>(2);
@@ -867,8 +874,7 @@ ORDER BY dm.sent_time DESC LIMIT $3;",
                 &[&username],
             )
             .await?;
-
-        for row in rows {
+        if let Some(row) = rows.into_iter().next() {
             let token: String = row.get::<usize, String>(0);
             let creation_time: chrono::DateTime<Utc> = row.get::<usize, chrono::DateTime<Utc>>(1);
             let expiration_time: chrono::DateTime<Utc> = row.get::<usize, chrono::DateTime<Utc>>(2);
@@ -932,9 +938,12 @@ ORDER BY dm.sent_time DESC LIMIT $3;",
     }
 
     pub async fn accept_friend_request(&self, request: &FriendRequest) -> anyhow::Result<()> {
-        self.delete_friend_request(&request.request_id).await.unwrap();
+        self.delete_friend_request(&request.request_id)
+            .await
+            .unwrap();
         self.make_friends(&request.requester_id, &request.requested_id)
-            .await.unwrap();
+            .await
+            .unwrap();
         Ok(())
     }
 
@@ -969,7 +978,7 @@ ORDER BY dm.sent_time DESC LIMIT $3;",
             .await?;
 
         let mut requests = vec![];
-        for row in rows {
+        if let Some(row) = rows.into_iter().next() {
             let id = row.get::<&str, Uuid>("id");
             let requested_id = row.get::<&str, Uuid>("requested");
             let requester_id = row.get::<&str, Uuid>("requester");
@@ -1212,6 +1221,7 @@ ORDER BY dm.sent_time DESC LIMIT $3;",
         Ok(message_id)
     }
 
+    #[allow(unused)]
     pub async fn renew_token(&self, token: &str) -> anyhow::Result<Token> {
         if !self.token_exist_and_not_expired(&token).await? {
             return Err(anyhow!("Token does not exist or expired!"));

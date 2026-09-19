@@ -40,6 +40,7 @@ impl CustomS3client {
         Ok(Self::new(s3_client))
     }
 
+    #[allow(unused)]
     pub async fn create_bucket_with_id(&self) -> anyhow::Result<Uuid> {
         let id = uuid::Uuid::new_v4();
 
@@ -52,6 +53,7 @@ impl CustomS3client {
         Ok(id)
     }
 
+    #[allow(unused)]
     pub async fn create_bucket(&self, name: &str) -> anyhow::Result<()> {
         self.client
             .create_bucket()
@@ -62,6 +64,7 @@ impl CustomS3client {
         Ok(())
     }
 
+    #[allow(unused)]
     pub async fn remove_bucket(&self, name: &str) -> anyhow::Result<()> {
         self.client
             .delete_bucket()

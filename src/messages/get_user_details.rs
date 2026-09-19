@@ -1,15 +1,15 @@
 use std::sync::Arc;
 
-use anyhow::anyhow;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-    api::{OriginRequestType, Process, ResponseType, UserId},
+    api::{ErrorResponse, OriginRequestType, Process, ResponseType, UserId},
     messages::UserToUser,
     postgres::CustomPostgresClient,
     redis::{CustomRedisClient, CustomRedisPubSink},
     s3::CustomS3client,
+    unknown_token,
 };
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -19,7 +19,7 @@ pub struct GetUserDetails {
 
 impl Process for GetUserDetails {
     fn original_type(&self) -> OriginRequestType {
-        todo!()
+        OriginRequestType::GetUserDetails
     }
 
     async fn process(
@@ -29,12 +29,11 @@ impl Process for GetUserDetails {
         _: &mut CustomRedisPubSink,
         _: &mut Arc<CustomRedisClient>,
         token: &str,
-    ) -> anyhow::Result<ResponseType> {
+    ) -> anyhow::Result<ResponseType, ErrorResponse> {
         if !postgres_client.token_exist_and_not_expired(token).await? {
-            return Err(anyhow!("Token does not exist or expired!"));
+            unknown_token!();
         }
 
-        let id = postgres_client.get_user_id_from_token(token).await?;
         let user = postgres_client.get_user_by_id(&self.user_id).await?;
 
         Ok(ResponseType::User {

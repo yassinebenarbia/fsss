@@ -16,7 +16,9 @@ mod http;
 mod messages;
 mod postgres;
 mod redis;
+mod result;
 mod s3;
+mod serializer;
 mod websocket;
 
 #[tokio::main]

@@ -3,6 +3,8 @@ CREATE TABLE IF NOT EXISTS friend_request (
   requester UUID NOT NULL references users(id),
   requested UUID NOT NULL references users(id),
   request_time TIMESTAMPTZ NOT NULL DEFAULT now(),
-  request_message TEXT
+  request_message TEXT,
+  unique(requester, requested),
+  PRIMARY KEY id,
 );
 -- is there a way to make sure that friend_request can only occure if A and B are not friends

@@ -1,15 +1,15 @@
 use std::sync::Arc;
 
-use anyhow::anyhow;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-    api::{OriginRequestType, Process, ResponseType, ServerId, UserId},
-    messages::{UserToServer, UserToUser},
+    api::{ErrorResponse, OriginRequestType, Process, ResponseType, UserId},
+    messages::UserToUser,
     postgres::CustomPostgresClient,
     redis::{CustomRedisClient, CustomRedisPubSink},
     s3::CustomS3client,
+    unknown_token,
 };
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -29,9 +29,9 @@ impl Process for BanUserFromFriends {
         _: &mut CustomRedisPubSink,
         _: &mut Arc<CustomRedisClient>,
         token: &str,
-    ) -> anyhow::Result<ResponseType> {
+    ) -> anyhow::Result<ResponseType, ErrorResponse> {
         if !postgres_client.token_exist_and_not_expired(&token).await? {
-            return Err(anyhow!("Token does not exist or expired!"));
+            unknown_token!();
         }
 
         let banner_id = postgres_client.get_user_id_from_token(&token).await?;
@@ -49,7 +49,7 @@ impl Process for BanUserFromFriends {
 
 impl UserToUser for BanUserFromFriends {
     fn receiver_id(&self) -> anyhow::Result<UserId> {
-        todo!()
+        Ok(UserId::from(self.banned_id))
     }
 
     async fn sender_id(

@@ -21,6 +21,7 @@ pub struct CustomRedisClient {
     pub client: redis::Client,
 }
 
+#[allow(unused)]
 impl CustomRedisClient {
     pub async fn new(config: &config::Redis) -> anyhow::Result<Self> {
         let client = redis::Client::open(format!(
@@ -107,7 +108,7 @@ pub enum ChannelPath<T1: ToString, T2: ToString, T3: ToString> {
 impl From<&WriteDM> for ChannelPath<String, String, String> {
     fn from(value: &WriteDM) -> Self {
         match &value.reply {
-            Some(replied_id) => ChannelPath::new_dm_path(value.receiver.to_string()),
+            Some(_) => ChannelPath::new_dm_path(value.receiver.to_string()),
             None => ChannelPath::new_dm_path(value.receiver.to_string()),
         }
     }

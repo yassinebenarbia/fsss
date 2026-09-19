@@ -59,6 +59,7 @@ use crate::{
     },
     postgres::CustomPostgresClient,
     redis::{CustomRedisClient, CustomRedisPubSink},
+    result::error::ServerError::{self},
     s3::CustomS3client,
 };
 
@@ -246,20 +247,32 @@ impl MessageType {
         redis_client: &mut Arc<CustomRedisClient>,
     ) -> ResponseType {
         if self.requires_user_ban_check() {
-            if self.user_banned_the_other(&postgres_client).await.unwrap() {
-                return ResponseType::Error(format!("You are banned by the requested user!"));
-            } else {
-                return self
-                    .process_request(postgres_client, s3_client, pub_sink, redis_client)
-                    .await;
+            match self.user_banned_the_other(&postgres_client).await.unwrap() {
+                Some((banner_id, banned_id)) => {
+                    return ResponseType::error(ServerError::BannedByUser {
+                        banner_id,
+                        banned_id,
+                    });
+                }
+                None => {
+                    return self
+                        .process_request(postgres_client, s3_client, pub_sink, redis_client)
+                        .await;
+                }
             }
         } else if self.requires_server_ban_check() {
-            if self.is_banned_by_server(&postgres_client).await.unwrap() {
-                return ResponseType::Error(format!("You are banned by the requested user!"));
-            } else {
-                return self
-                    .process_request(postgres_client, s3_client, pub_sink, redis_client)
-                    .await;
+            match self.is_banned_by_server(&postgres_client).await.unwrap() {
+                Some((banned_id, banner_id)) => {
+                    return ResponseType::error(ServerError::BannedByServer {
+                        banner_id,
+                        banned_id,
+                    });
+                }
+                None => {
+                    return self
+                        .process_request(postgres_client, s3_client, pub_sink, redis_client)
+                        .await;
+                }
             }
         } else {
             return self
@@ -275,6 +288,7 @@ impl MessageType {
         pub_sink: &mut CustomRedisPubSink,
         redis_client: &mut Arc<CustomRedisClient>,
     ) -> ResponseType {
+        #[allow(unused)]
         match self {
             MessageType::RegisterRequest { message } => {
                 process(
@@ -619,7 +633,6 @@ impl MessageType {
                 )
                 .await
             }
-            // MessageType::GetDMs { token, message } => todo!(),
             MessageType::BanUserFromFriends { token, message } => {
                 process(
                     message,
@@ -709,18 +722,24 @@ impl MessageType {
         postgres_client: &Arc<CustomPostgresClient>,
         token: &str,
         request: &T,
-    ) -> anyhow::Result<bool> {
-        let sender_id = request.sender_id(token, postgres_client).await?;
-        let receiver_id = request.receiver_id()?;
-        return postgres_client
-            .either_is_banned(&sender_id, &receiver_id)
-            .await;
+    ) -> anyhow::Result<Option<(UserId, UserId)>> {
+        // TODO: return ban direction
+        let banned_id = request.sender_id(token, postgres_client).await?;
+        let banner_id = request.receiver_id()?;
+        if postgres_client
+            .either_is_banned(&banned_id, &banner_id)
+            .await?
+        {
+            Ok(Some((banned_id, banner_id)))
+        } else {
+            return Ok(None);
+        }
     }
 
     async fn user_banned_the_other(
         &self,
         postgres_client: &Arc<CustomPostgresClient>,
-    ) -> anyhow::Result<bool> {
+    ) -> anyhow::Result<Option<(UserId, UserId)>> {
         match self {
             MessageType::GetUserDetails { token, message } => {
                 return Self::check_user_ban(postgres_client, token, message).await;
@@ -731,7 +750,7 @@ impl MessageType {
             MessageType::SendDM { token, message } => {
                 return Self::check_user_ban(postgres_client, token, message).await;
             }
-            _ => todo!(),
+            _ => unimplemented!(),
         }
     }
 
@@ -739,18 +758,24 @@ impl MessageType {
         postgres_client: &Arc<CustomPostgresClient>,
         token: &str,
         request: &T,
-    ) -> anyhow::Result<bool> {
+    ) -> anyhow::Result<Option<(UserId, ServerId)>> {
         let requester_id = request.requester(token, postgres_client).await?;
         let server_id = request.server_id()?;
-        postgres_client
+        if postgres_client
             .is_banned_from_server(&server_id, &requester_id)
-            .await
+            .await?
+        {
+            return Ok(Some((requester_id, server_id)));
+        } else {
+            return Ok(None);
+        }
     }
 
     async fn is_banned_by_server(
         &self,
         postgres_client: &Arc<CustomPostgresClient>,
-    ) -> anyhow::Result<bool> {
+        // ) -> anyhow::Result<bool> {
+    ) -> anyhow::Result<Option<(UserId, ServerId)>> {
         match self {
             MessageType::CreateSpace { token, message } => {
                 return Self::check_server_ban(postgres_client, token, message).await;
@@ -818,7 +843,7 @@ where
         .await
     {
         Ok(v) => v,
-        Err(e) => ResponseType::Error(e.to_string()),
+        Err(e) => ResponseType::error(e.kind),
     }
 }
 // should we check for bans while doing the request handling or just before it

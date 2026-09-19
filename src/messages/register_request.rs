@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-    api::{OriginRequestType, Process, ResponseType, UserMetadata},
+    api::{ErrorResponse, OriginRequestType, Process, ResponseType, UserMetadata},
     postgres::CustomPostgresClient,
     redis::{ChannelPath, CustomRedisClient, CustomRedisPubSink},
     s3::CustomS3client,
@@ -29,10 +29,10 @@ impl Process for RegisterRequest {
         redis_client: &mut CustomRedisPubSink,
         _: &mut Arc<CustomRedisClient>,
         _: &str,
-    ) -> anyhow::Result<ResponseType> {
+    ) -> anyhow::Result<ResponseType, ErrorResponse> {
         let user_id = Uuid::new_v4();
 
-        postgres_client
+        Ok(postgres_client
             .register_user(&self.username, &self.password, &user_id)
             .then(|token| async {
                 if let Ok(_) = &token {
@@ -61,7 +61,7 @@ impl Process for RegisterRequest {
                 original_request_type: self.original_type(),
                 associated_user_id: user_id,
                 token,
-            })
+            })?)
     }
 
     fn original_type(&self) -> OriginRequestType {

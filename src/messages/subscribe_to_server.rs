@@ -1,14 +1,14 @@
 use std::sync::Arc;
 
-use anyhow::anyhow;
+
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    api::{OriginRequestType, Process, ResponseType, ServerId, UserId},
+    api::{ErrorResponse, OriginRequestType, Process, ResponseType, ServerId, UserId},
     messages::UserToServer,
     postgres::CustomPostgresClient,
     redis::{ChannelPath, CustomRedisClient, CustomRedisPubSink},
-    s3::CustomS3client,
+    s3::CustomS3client, unknown_token,
 };
 
 // TODO: add unsub request
@@ -29,9 +29,9 @@ impl Process for SubscribeToServerRequest {
         pubsub_client: &mut CustomRedisPubSink,
         _: &mut Arc<CustomRedisClient>,
         token: &str,
-    ) -> anyhow::Result<ResponseType> {
+    ) -> anyhow::Result<ResponseType, ErrorResponse> {
         if !postgres_client.token_exist_and_not_expired(token).await? {
-            return Err(anyhow!("Token does not exist or expired!"));
+            unknown_token!();
         }
 
         let user_id = postgres_client.get_user_id_from_token(token).await?;
@@ -39,11 +39,7 @@ impl Process for SubscribeToServerRequest {
         let server_id = ServerId::try_from(&self.server_id)?;
 
         if !postgres_client.is_joined(&server_id, &user_id).await? {
-            return Err(anyhow!(
-                "User with id {} is not joined to {}",
-                user_id,
-                self.server_id
-            ));
+            return Err(ErrorResponse::not_a_member(&server_id, &user_id));
         }
 
         pubsub_client

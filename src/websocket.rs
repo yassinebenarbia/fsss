@@ -10,7 +10,6 @@ use std::str::FromStr;
 // TODO: remove the word request
 use std::sync::Arc;
 
-use anyhow::anyhow;
 use chrono::{DateTime, NaiveDateTime, Utc};
 use futures_util::StreamExt;
 use futures_util::{SinkExt, stream::SplitSink};
@@ -21,12 +20,12 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio_tungstenite::{WebSocketStream, tungstenite};
 use uuid::Uuid;
 
-use crate::messages::create_server::CreateServerRequest;
-use crate::messages::create_space::CreateSpaceRequest;
 use crate::messages::login_request::LoginRequest;
 use crate::postgres::FriendRequest;
 use crate::redis::{CustomRedisClient, CustomRedisPubSink};
+use crate::result::error::ServerError;
 use crate::s3::CustomS3client;
+use crate::unknown_token;
 use crate::{
     config::Config,
     messages::MessageType,
@@ -110,6 +109,7 @@ pub struct Space {
     creator: Uuid,
     creation_time: NaiveDateTime,
     #[serde(skip_serializing)]
+    #[allow(unused)]
     bucket: Uuid,
 }
 
@@ -213,10 +213,7 @@ impl SpaceMessage {
     }
 }
 
-#[derive(Deserialize, Serialize)]
-pub struct Authenticate {}
-
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct SpaceId(Uuid);
 
 impl Display for SpaceId {
@@ -253,6 +250,7 @@ impl TryFrom<&String> for SpaceId {
     }
 }
 
+#[allow(unused)]
 impl SpaceId {
     pub fn inner(&self) -> &Uuid {
         &self.0
@@ -268,7 +266,7 @@ impl SpaceId {
 }
 
 // TODO: impl ToSql
-#[derive(Deserialize, Serialize)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct ServerId(Uuid);
 
 impl TryFrom<&str> for ServerId {
@@ -293,6 +291,7 @@ impl Display for ServerId {
     }
 }
 
+#[allow(unused)]
 impl ServerId {
     pub fn inner(&self) -> &Uuid {
         &self.0
@@ -325,7 +324,7 @@ impl From<&UserId> for UserId {
     }
 }
 
-#[derive(Deserialize, Serialize, Debug)]
+#[derive(Deserialize, Serialize, Debug, Clone)]
 pub struct UserId(Uuid);
 
 impl Display for UserId {
@@ -334,7 +333,12 @@ impl Display for UserId {
     }
 }
 
+#[allow(unused)]
 impl UserId {
+    pub fn new(uuid: Uuid) -> Self {
+        Self(uuid)
+    }
+
     pub fn inner_clone(&self) -> Uuid {
         self.0.to_owned()
     }
@@ -376,36 +380,18 @@ impl TryFrom<&String> for UserId {
     }
 }
 
-#[derive(Deserialize, Serialize)]
-pub struct RestoreSessionRequest {
-    token: String,
-}
-
 #[derive(Deserialize, Serialize, Debug, Clone)]
-pub enum MessageKind {
+pub enum TextMessageKind {
     Text,
     Markdown,
 }
 
-impl Into<crate::postgres::MessageKind> for MessageKind {
+impl Into<crate::postgres::MessageKind> for TextMessageKind {
     fn into(self) -> crate::postgres::MessageKind {
         match self {
-            MessageKind::Text | MessageKind::Markdown => crate::postgres::MessageKind::TEXT,
+            TextMessageKind::Text | TextMessageKind::Markdown => crate::postgres::MessageKind::TEXT,
         }
     }
-}
-
-#[derive(Deserialize, Serialize, Debug)]
-pub enum AfterToken {
-    #[serde(untagged)]
-    CreateServer(CreateServerRequest),
-    #[serde(untagged)]
-    CreateSpace {
-        token: String,
-        message: CreateSpaceRequest,
-    },
-    #[serde(untagged)]
-    ListServers(),
 }
 
 #[derive(Deserialize, Serialize)]
@@ -439,6 +425,7 @@ pub enum OriginRequestType {
     BanUserFromServer,
     UnbanUserFromServer,
     BanUserFromFriends,
+    GetUserDetails,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -448,7 +435,9 @@ pub struct VersionedMessage {
     pub payload: MessageType,
 }
 
+#[allow(unused)]
 impl VersionedMessage {
+    // FIXME
     fn randomize() -> Self {
         VersionedMessage {
             version: 1.0,
@@ -536,10 +525,120 @@ pub struct Member {
     pub banned: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
+pub struct ErrorResponse {
+    pub message: String,
+    pub kind: ServerError,
+}
+
+impl ToString for ErrorResponse {
+    fn to_string(&self) -> String {
+        format!("{}: {}", self.kind, self.message)
+    }
+}
+
+impl From<uuid::Error> for ErrorResponse {
+    fn from(value: uuid::Error) -> Self {
+        Self {
+            message: format!("{:?}", value),
+            kind: ServerError::InternalError,
+        }
+    }
+}
+
+impl From<anyhow::Error> for ErrorResponse {
+    fn from(value: anyhow::Error) -> Self {
+        Self {
+            message: format!("{:?}", value),
+            kind: ServerError::InternalError,
+        }
+    }
+}
+
+#[allow(unused)]
+impl ErrorResponse {
+    pub fn unauthorized() -> Self {
+        Self {
+            message: ServerError::Unauthorized.message(),
+            kind: ServerError::Unauthorized,
+        }
+    }
+
+    pub fn server_does_not_exist(server_id: &ServerId) -> Self {
+        let kind = ServerError::ServerDoestNotExist {
+            server_id: server_id.clone(),
+        };
+        Self {
+            message: kind.message(),
+            kind,
+        }
+    }
+
+    pub fn space_does_not_exist(space_id: &SpaceId, server_id: &ServerId) -> Self {
+        let kind = ServerError::SpaceDoestNotExist {
+            space_id: space_id.clone(),
+            server_id: server_id.clone(),
+        };
+        Self {
+            message: kind.message(),
+            kind,
+        }
+    }
+
+    #[deprecated]
+    pub fn token_expired() -> Self {
+        Self {
+            message: ServerError::TokenDoNotExistOrExpired.message(),
+            kind: ServerError::TokenDoNotExistOrExpired,
+        }
+    }
+
+    #[deprecated]
+    pub fn friend_request_doest_not_exist(request_id: &Uuid) -> Self {
+        let kind = ServerError::FriendRequestDoesNotExist {
+            request_id: request_id.to_owned(),
+        };
+        Self {
+            message: kind.message(),
+            kind,
+        }
+    }
+
+    pub fn unknown_token() -> Self {
+        ErrorResponse {
+            message: ServerError::TokenDoNotExistOrExpired.message(),
+            kind: ServerError::TokenDoNotExistOrExpired,
+        }
+    }
+
+    pub fn not_a_member(server_id: &ServerId, user_id: &UserId) -> Self {
+        let kind = ServerError::NotAMember {
+            user_id: user_id.clone(),
+            server_id: server_id.clone(),
+        };
+        ErrorResponse {
+            message: kind.message(),
+            kind,
+        }
+    }
+
+    pub fn already_friends(requester_id: &UserId, requested_id: &UserId) -> Self {
+        let kind = ServerError::AlreadyFriends {
+            lhs: requester_id.clone(),
+            rhs: requested_id.clone(),
+        };
+        ErrorResponse {
+            message: kind.message(),
+            kind,
+        }
+    }
+}
+
+// #[derive(Serialize)]
+// #[serde(tag = "event", content = "data")]
 pub enum ResponseType {
     Notificaiton {
-        #[serde(flatten)]
+        // #[serde(flatten)]
         notification: Notification,
     },
     MessageSent {
@@ -564,7 +663,10 @@ pub enum ResponseType {
         associated_user_id: Uuid,
         token: Token,
     },
-    Error(String),
+    Error {
+        message: String,
+        kind: ServerError,
+    },
     ServersList {
         original_request_type: OriginRequestType,
         servers: Vec<Server>,
@@ -609,20 +711,74 @@ pub enum ResponseType {
     },
 }
 
+#[allow(unused)]
 impl ResponseType {
+    pub fn wrap_ok(self) -> Result<Self, ()> {
+        Ok(self)
+    }
+
+    pub fn message_kind(&self) -> &'_ MessageKind {
+        if matches!(
+            self,
+            ResponseType::Error {
+                message: _,
+                kind: _
+            }
+        ) {
+            &MessageKind::Error
+        } else if matches!(self, ResponseType::Notificaiton { notification: _ }) {
+            &MessageKind::Notification
+        } else {
+            &MessageKind::Response
+        }
+    }
+
+    /// TODO: DELETE THIS, NOT VERY NEAT
+    pub fn internal_error<E: std::error::Error>(e: E) -> Self {
+        ResponseType::Error {
+            message: format!("{}", e),
+            kind: ServerError::InternalError,
+        }
+    }
+
+    pub fn error(kind: ServerError) -> Self {
+        Self::Error {
+            message: kind.message(),
+            kind,
+        }
+    }
+
     fn is_notification(&self) -> bool {
         matches!(self, ResponseType::Notificaiton { .. })
     }
 }
 
 #[derive(Serialize)]
+pub enum MessageKind {
+    Error,
+    Response,
+    Notification,
+}
+
+// #[derive(Serialize)]
+// pub struct ResponseTemplate<'a> {
+//     #[serde(borrow)]
+//     kind: &'a MessageKind,
+//     #[serde(skip_serializing_if = "Option::is_none")]
+//     id: Option<String>,
+//     #[serde(borrow)]
+//     body: &'a ResponseType,
+// }
+
+#[derive(Serialize)]
 pub struct Response<'a> {
     // FIXME: add flatten to this serde
     #[serde(borrow)]
-    content: &'a ResponseType,
+    kind: &'a MessageKind,
     #[serde(skip_serializing_if = "Option::is_none")]
     id: Option<String>,
-    is_notification: bool,
+    #[serde(borrow, flatten)]
+    data: &'a ResponseType,
 }
 
 impl Response<'_> {
@@ -752,12 +908,12 @@ impl AsNotification for DMNotification {
 #[derive(Deserialize, Serialize, Debug, Clone)]
 // TODO: make these a & instead of a moved values
 pub struct ServerMessageNotification {
-    space_id: Uuid,
-    server_id: Uuid,
-    content: String,
-    sender: User,
-    kind: crate::postgres::MessageKind,
-    sent_time: NaiveDateTime,
+    pub space_id: Uuid,
+    pub server_id: Uuid,
+    pub content: String,
+    pub sender: User,
+    pub kind: crate::postgres::MessageKind,
+    pub sent_time: NaiveDateTime,
 }
 
 impl AsNotification for ServerMessageNotification {
@@ -800,6 +956,7 @@ impl AsNotification for ServerJoinedNotification {
     }
 }
 
+#[allow(unused)]
 impl ServerJoinedNotification {
     fn new(server_id: Uuid, visitor: User, joined_time: NaiveDateTime) -> Self {
         Self {
@@ -870,9 +1027,15 @@ impl<'a> Response<'a> {
         &self,
         write: &mut SplitSink<WebSocketStream<TcpStream>, tungstenite::Message>,
     ) -> anyhow::Result<()> {
-        if matches!(self.content, ResponseType::Close()) {
+        if matches!(self.data, ResponseType::Close()) {
             write.close().await?;
-        } else if matches!(self.content, ResponseType::Error(_)) {
+        } else if matches!(
+            self.data,
+            ResponseType::Error {
+                message: _,
+                kind: _
+            }
+        ) {
             write
                 .send(tungstenite::Message::text(&serde_json::to_string_pretty(
                     self,
@@ -896,11 +1059,14 @@ impl<'a> Response<'a> {
     }
 }
 
-impl From<anyhow::Error> for ResponseType {
-    fn from(value: anyhow::Error) -> Self {
-        Self::Error(value.to_string())
-    }
-}
+// impl From<anyhow::Error> for ResponseType {
+//     fn from(value: anyhow::Error) -> Self {
+//         Self::Error {
+//             message: value.to_string(),
+//             kind:
+//         }
+//     }
+// }
 
 impl ResponseType {
     pub async fn send(
@@ -909,7 +1075,13 @@ impl ResponseType {
     ) -> anyhow::Result<()> {
         if matches!(self, Self::Close()) {
             write.close().await?;
-        } else if matches!(self, Self::Error(_)) {
+        } else if matches!(
+            self,
+            Self::Error {
+                message: _,
+                kind: _
+            }
+        ) {
             write
                 .send(tungstenite::Message::text(&serde_json::to_string_pretty(
                     self,
@@ -931,13 +1103,14 @@ impl ResponseType {
 
     fn as_response<'a>(&'a self) -> Response<'a> {
         Response {
+            kind: &self.message_kind(),
             id: None,
-            content: &self,
-            is_notification: self.is_notification(),
+            data: &self,
         }
     }
 }
 
+#[allow(unused)]
 mod tests {
     use crate::{
         api::{ResponseType, VersionedMessage},
@@ -952,8 +1125,11 @@ mod tests {
         .unwrap();
         println!("{s}");
 
-        let s =
-            serde_json::to_string_pretty(&ResponseType::Error("Hello world".to_string())).unwrap();
+        let s = serde_json::to_string_pretty(&ResponseType::Error {
+            message: format!("Error Message"),
+            kind: crate::result::error::ServerError::Unauthorized,
+        })
+        .unwrap();
         println!("{s}");
     }
 
@@ -1061,9 +1237,9 @@ pub trait Process {
         _: &mut CustomRedisPubSink,
         _: &mut Arc<CustomRedisClient>,
         token: &str,
-    ) -> anyhow::Result<ResponseType> {
+    ) -> anyhow::Result<ResponseType, ErrorResponse> {
         if !postgres_client.token_exist_and_not_expired(token).await? {
-            return Err(anyhow!("Token does not exist or expired!"));
+            unknown_token!();
         }
 
         Ok(ResponseType::Ok {
@@ -1127,7 +1303,7 @@ async fn handle_ws_connection(
                                     .send(&mut write)
                                     .await?
                             } else {
-                                ResponseType::Error(String::from("Wrong version"))
+                                ResponseType::error(ServerError::VersionError)
                                     .as_response()
                                     .with_id(id)
                                     .send(&mut write)
@@ -1135,7 +1311,7 @@ async fn handle_ws_connection(
                             }
                         }
                         Err(e) => {
-                            ResponseType::from(anyhow::anyhow!(e))
+                            ResponseType::internal_error(e)
                                 .as_response()
                                 .send(&mut write)
                                 .await?;

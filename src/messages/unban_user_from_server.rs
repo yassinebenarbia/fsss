@@ -1,15 +1,15 @@
 use std::sync::Arc;
 
-use anyhow::anyhow;
+
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-    api::{OriginRequestType, Process, ResponseType, ServerId, UserId},
+    api::{ErrorResponse, OriginRequestType, Process, ResponseType, ServerId, UserId},
     messages::UserToServer,
     postgres::CustomPostgresClient,
     redis::{CustomRedisClient, CustomRedisPubSink},
-    s3::CustomS3client,
+    s3::CustomS3client, unknown_token,
 };
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -30,11 +30,11 @@ impl Process for UnbanUserFromServer {
         _: &mut CustomRedisPubSink,
         _: &mut Arc<CustomRedisClient>,
         token: &str,
-    ) -> anyhow::Result<ResponseType> {
+    ) -> anyhow::Result<ResponseType, ErrorResponse> {
         // what do we need to unban a user from server?
         // do we check if user is not banned? or is it the return of the unbn method
         if !postgres_client.token_exist_and_not_expired(&token).await? {
-            return Err(anyhow!("Token does not exist or expired!"));
+            unknown_token!();
         }
 
         let server_id = ServerId::from(&self.server_id);
@@ -42,31 +42,28 @@ impl Process for UnbanUserFromServer {
         let unbanned_user_id = &UserId::from(&self.banned_id);
 
         if !postgres_client.server_exist(&server_id).await? {
-            return Err(anyhow!("Server `{}` does not exist", self.server_id));
+            return Err(ErrorResponse::server_does_not_exist(&server_id));
         }
 
         if !postgres_client
             .is_joined(&server_id, &unbanner_user_id)
             .await?
         {
-            return Err(anyhow!("You are not a member of that server"));
+            return Err(ErrorResponse::not_a_member(&server_id, unbanned_user_id));
         }
 
         if !postgres_client
             .can_ban(&server_id, &unbanner_user_id)
             .await?
         {
-            return Err(anyhow!("Unseficcient permissions"));
+            return Err(ErrorResponse::unauthorized());
         }
 
         if !postgres_client
             .is_banned_from_server(&server_id, unbanned_user_id)
             .await?
         {
-            return Err(anyhow!(
-                "User `{}` is not a member of that server",
-                self.banned_id
-            ));
+            return Err(ErrorResponse::not_a_member(&server_id, &unbanner_user_id));
         }
 
         postgres_client

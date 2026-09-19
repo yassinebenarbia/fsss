@@ -1,14 +1,15 @@
 use std::sync::Arc;
 
-use anyhow::anyhow;
+
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    api::{OriginRequestType, Process, ResponseType, ServerId, UserId},
+    api::{ErrorResponse, OriginRequestType, Process, ResponseType, ServerId, UserId},
     messages::UserToServer,
     postgres::CustomPostgresClient,
     redis::{CustomRedisClient, CustomRedisPubSink},
     s3::CustomS3client,
+    unknown_token,
 };
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -25,24 +26,24 @@ impl Process for DeleteSpaceRequest {
         _: &mut CustomRedisPubSink,
         _: &mut Arc<CustomRedisClient>,
         token: &str,
-    ) -> anyhow::Result<ResponseType> {
+    ) -> anyhow::Result<ResponseType, ErrorResponse> {
         if !postgres_client.token_exist_and_not_expired(token).await? {
-            return Err(anyhow!("Token does not exist or expired!"));
+            unknown_token!();
         }
 
         let user_id = postgres_client.get_user_id_from_token(token).await?;
         let server_id = ServerId::try_from(&self.server_id)?;
 
         if !postgres_client.is_admin(&server_id, &user_id).await? {
-            return Err(anyhow!("Unseficcient previlages"));
+            return Err(ErrorResponse::unauthorized());
         }
 
-        postgres_client
+        Ok(postgres_client
             .delete_space(&self.space_id, &self.server_id)
             .await
             .map(|_| ResponseType::Ok {
                 original_request_type: self.original_type(),
-            })
+            })?)
     }
 
     fn original_type(&self) -> OriginRequestType {

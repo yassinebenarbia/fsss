@@ -1,6 +1,5 @@
 use std::{str::FromStr, sync::Arc};
 
-use anyhow::anyhow;
 use chrono::Utc;
 use futures_util::FutureExt;
 use serde::{Deserialize, Serialize};
@@ -8,13 +7,15 @@ use uuid::Uuid;
 
 use crate::{
     api::{
-        AsNotification, MessageKind, ServerMessageNotification, OriginRequestType, Process, ResponseType,
-        ServerId, UserId,
+        AsNotification, OriginRequestType, Process, ResponseType, ServerId,
+        ServerMessageNotification, TextMessageKind, UserId,
     },
     messages::UserToServer,
     postgres::CustomPostgresClient,
     redis::{ChannelPath, CustomRedisClient, CustomRedisPubSink},
     s3::CustomS3client,
+    unknown_token,
+    websocket::ErrorResponse,
 };
 
 // NOTE:
@@ -40,7 +41,7 @@ use crate::{
 pub struct WriteMessageRequest {
     pub server_id: String,
     pub space_id: String,
-    pub message_kind: MessageKind,
+    pub message_kind: TextMessageKind,
     pub message_content: String,
     pub reply: Option<Uuid>,
 }
@@ -53,9 +54,9 @@ impl Process for WriteMessageRequest {
         _: &mut CustomRedisPubSink,
         redis_conn: &mut Arc<CustomRedisClient>,
         token: &str,
-    ) -> anyhow::Result<ResponseType> {
+    ) -> anyhow::Result<ResponseType, ErrorResponse> {
         if !postgres_client.token_exist_and_not_expired(token).await? {
-            return Err(anyhow!("Token does not exist or expired!"));
+            unknown_token!();
         }
 
         let user = postgres_client.get_user_by_token(token).await?;
@@ -74,7 +75,7 @@ impl Process for WriteMessageRequest {
         println!("Writing message to DB");
         let user_id = UserId::from(&user.id);
 
-        postgres_client
+        Ok(postgres_client
             .write_server_text_message(&user_id, &self)
             .then(|result| async {
                 redis_conn
@@ -86,7 +87,7 @@ impl Process for WriteMessageRequest {
             .map(|message_id| ResponseType::MessageSent {
                 original_request_type: self.original_type(),
                 message_id,
-            })
+            })?)
     }
 
     fn original_type(&self) -> OriginRequestType {

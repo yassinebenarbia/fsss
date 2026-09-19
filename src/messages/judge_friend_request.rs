@@ -1,18 +1,17 @@
 use std::{str::FromStr, sync::Arc};
 
-use anyhow::anyhow;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
     api::{
-        AsNotification, FriendRequestJudgementNotification, OriginRequestType, Process,
-        ResponseType, UserId,
+        AsNotification, ErrorResponse, FriendRequestJudgementNotification, OriginRequestType,
+        Process, ResponseType,
     },
-    messages::UserToUser,
     postgres::CustomPostgresClient,
     redis::{ChannelPath, CustomRedisClient, CustomRedisPubSink},
     s3::CustomS3client,
+    unknown_token,
 };
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -33,9 +32,9 @@ impl Process for JudgeFriendRequest {
         _: &mut CustomRedisPubSink,
         redis_client: &mut Arc<CustomRedisClient>,
         token: &str,
-    ) -> anyhow::Result<ResponseType> {
+    ) -> anyhow::Result<ResponseType, ErrorResponse> {
         if !postgres_client.token_exist_and_not_expired(token).await? {
-            return Err(anyhow!("Token does not exist or expired!"));
+            unknown_token!();
         }
 
         let judged_request_id = Uuid::from_str(&self.judged_request_id)?;
@@ -43,8 +42,8 @@ impl Process for JudgeFriendRequest {
             .friend_request_exist(&judged_request_id)
             .await?
         {
-            return Err(anyhow!(
-                "request with id {judged_request_id} does not exist!"
+            return Err(ErrorResponse::friend_request_doest_not_exist(
+                &judged_request_id,
             ));
         }
 

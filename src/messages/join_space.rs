@@ -21,6 +21,7 @@ impl Process for JoinSpaceRequest {
 }
 
 impl JoinSpaceRequest {
+    #[allow(unused)]
     pub async fn register_user_to_space(&self) -> anyhow::Result<()> {
         Ok(())
     }

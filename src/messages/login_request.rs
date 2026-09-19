@@ -4,7 +4,7 @@ use futures_util::FutureExt;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    api::{OriginRequestType, Process, ResponseType},
+    api::{ErrorResponse, OriginRequestType, Process, ResponseType},
     postgres::CustomPostgresClient,
     redis::{ChannelPath, CustomRedisClient, CustomRedisPubSink},
     s3::CustomS3client,
@@ -28,7 +28,7 @@ impl Process for LoginRequest {
         redis_client: &mut CustomRedisPubSink,
         _: &mut Arc<CustomRedisClient>,
         _: &str,
-    ) -> anyhow::Result<ResponseType> {
+    ) -> anyhow::Result<ResponseType, ErrorResponse> {
         postgres_client
             .login_user(&self.username, &self.password)
             .then(|token| async {

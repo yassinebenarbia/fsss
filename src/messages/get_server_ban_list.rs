@@ -1,15 +1,15 @@
 use std::sync::Arc;
 
-use anyhow::anyhow;
+
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-    api::{OriginRequestType, Process, ResponseType, ServerId, UserId},
+    api::{ErrorResponse, OriginRequestType, Process, ResponseType, ServerId, UserId},
     messages::UserToServer,
     postgres::CustomPostgresClient,
     redis::{CustomRedisClient, CustomRedisPubSink},
-    s3::CustomS3client,
+    s3::CustomS3client, unknown_token,
 };
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -29,9 +29,9 @@ impl Process for GetServerBanList {
         _: &mut CustomRedisPubSink,
         _: &mut Arc<CustomRedisClient>,
         token: &str,
-    ) -> anyhow::Result<ResponseType> {
+    ) -> anyhow::Result<ResponseType, ErrorResponse> {
         if !postgres_client.token_exist_and_not_expired(token).await? {
-            return Err(anyhow!("Token does not exist or expired!"));
+            unknown_token!();
         }
 
         // is joined vs is admin?
@@ -40,7 +40,7 @@ impl Process for GetServerBanList {
         let server_id = ServerId::from(&self.server_id);
 
         if !postgres_client.is_joined(&server_id, &searcher_id).await? {
-            return Err(anyhow!("You are not a member of this server!"));
+            unknown_token!();
         }
 
         let users = postgres_client.banned_users(&self.server_id).await?;

@@ -6,15 +6,16 @@ use futures_util::FutureExt;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    api::{AsNotification, LogoutNotification, OriginRequestType, Process, ResponseType},
+    api::{
+        AsNotification, ErrorResponse, LogoutNotification, OriginRequestType, Process, ResponseType,
+    },
     postgres::CustomPostgresClient,
     redis::{ChannelPath, CustomRedisClient, CustomRedisPubSink},
-    s3::CustomS3client,
+    s3::CustomS3client, unknown_token,
 };
 
 #[derive(Deserialize, Serialize, Debug)]
 pub struct LogoutRequest {}
-
 
 impl Process for LogoutRequest {
     async fn process(
@@ -24,9 +25,9 @@ impl Process for LogoutRequest {
         pub_sink: &mut CustomRedisPubSink,
         redis_client: &mut Arc<CustomRedisClient>,
         token: &str,
-    ) -> anyhow::Result<ResponseType> {
+    ) -> anyhow::Result<ResponseType, ErrorResponse> {
         if !postgres_client.token_exist_and_not_expired(token).await? {
-            return Err(anyhow!("Token does not exist or expired!"));
+            unknown_token!();
         }
 
         let user = postgres_client
@@ -44,7 +45,7 @@ impl Process for LogoutRequest {
             )
             .await?;
 
-        pub_sink
+        Ok(pub_sink
             .unsubscribe_all()
             .then(|result| async {
                 result?;
@@ -53,7 +54,7 @@ impl Process for LogoutRequest {
             .await
             .map(|_| ResponseType::Ok {
                 original_request_type: self.original_type(),
-            })
+            })?)
     }
 
     fn original_type(&self) -> OriginRequestType {

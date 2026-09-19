@@ -1,13 +1,13 @@
 use std::sync::Arc;
 
-use anyhow::anyhow;
+
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    api::{OriginRequestType, Process, ResponseType},
+    api::{ErrorResponse, OriginRequestType, Process, ResponseType},
     postgres::CustomPostgresClient,
     redis::{CustomRedisClient, CustomRedisPubSink},
-    s3::CustomS3client,
+    s3::CustomS3client, unknown_token,
 };
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -27,9 +27,9 @@ impl Process for GetFriendList {
         _: &mut CustomRedisPubSink,
         _: &mut Arc<CustomRedisClient>,
         token: &str,
-    ) -> anyhow::Result<ResponseType> {
+    ) -> anyhow::Result<ResponseType, ErrorResponse> {
         if !postgres_client.token_exist_and_not_expired(token).await? {
-            return Err(anyhow!("Token does not exist or expired!"));
+            unknown_token!();
         }
 
         let user = postgres_client.get_user_by_token(token).await?;

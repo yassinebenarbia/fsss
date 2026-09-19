@@ -1,18 +1,19 @@
 use std::{str::FromStr, sync::Arc};
 
-use anyhow::anyhow;
+
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
     api::{
-        AsNotification, FriendRequestNotification, OriginRequestType, Process, ResponseType, UserId,
+        AsNotification, ErrorResponse, FriendRequestNotification, OriginRequestType, Process,
+        ResponseType, UserId,
     },
     messages::UserToUser,
     postgres::CustomPostgresClient,
     redis::{ChannelPath, CustomRedisClient, CustomRedisPubSink},
-    s3::CustomS3client,
+    s3::CustomS3client, unknown_token,
 };
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -33,9 +34,9 @@ impl Process for SendFriendRequest {
         _: &mut CustomRedisPubSink,
         redis_client: &mut Arc<CustomRedisClient>,
         token: &str,
-    ) -> anyhow::Result<ResponseType> {
+    ) -> anyhow::Result<ResponseType, ErrorResponse> {
         if !postgres_client.token_exist_and_not_expired(token).await? {
-            return Err(anyhow!("Token does not exist or expired!"));
+            unknown_token!();
         }
 
         let requester_id = postgres_client.get_user_id_from_token(token).await?;
@@ -45,9 +46,7 @@ impl Process for SendFriendRequest {
             .are_friends(&requested_id, &requester_id)
             .await?
         {
-            return Err(anyhow!(
-                "{requester_id} and {requested_id} are already friends!"
-            ));
+            return Err(ErrorResponse::already_friends(&requester_id, &requested_id));
         }
 
         let request_id = postgres_client

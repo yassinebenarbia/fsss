@@ -1,20 +1,20 @@
 use std::{str::FromStr, sync::Arc};
 
-use anyhow::anyhow;
 use chrono::Utc;
-use futures_util::{FutureExt, TryFutureExt};
+use futures_util::TryFutureExt;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
     api::{
-        AsNotification, OriginRequestType, Process, ResponseType, ServerId,
+        AsNotification, ErrorResponse, OriginRequestType, Process, ResponseType, ServerId,
         SpaceCreatedNotification, UserId,
     },
-    messages::{UserToServer, UserToUser},
+    messages::UserToServer,
     postgres::CustomPostgresClient,
     redis::{ChannelPath, CustomRedisClient, CustomRedisPubSink},
     s3::CustomS3client,
+    unknown_token,
 };
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -31,9 +31,9 @@ impl Process for CreateSpaceRequest {
         _: &mut CustomRedisPubSink,
         redis_conn: &mut Arc<CustomRedisClient>,
         token: &str,
-    ) -> anyhow::Result<ResponseType> {
+    ) -> anyhow::Result<ResponseType, ErrorResponse> {
         if !postgres_client.token_exist_and_not_expired(token).await? {
-            return Err(anyhow!("Token does not exist or expired!"));
+            unknown_token!();
         }
 
         let user = postgres_client.get_user_by_token(token).await?;
@@ -42,7 +42,7 @@ impl Process for CreateSpaceRequest {
         println!("Got user {}", user.name);
 
         if !postgres_client.is_admin(&server_id, &user_id).await? {
-            return Err(anyhow!("Unseficcient previlages"));
+            return Err(ErrorResponse::unauthorized());
         }
 
         let server_id = Uuid::from_str(&self.server).unwrap();
@@ -57,7 +57,7 @@ impl Process for CreateSpaceRequest {
 
         println!("Creating space {}", self.name);
 
-        s3_client
+        Ok(s3_client
             .create_bucket_with_id()
             .and_then(|bucket_id| async move {
                 postgres_client
@@ -88,7 +88,7 @@ impl Process for CreateSpaceRequest {
                 return Ok(response);
             })
             .await
-            .map(ResponseType::SpaceId)
+            .map(ResponseType::SpaceId)?)
     }
 
     fn original_type(&self) -> OriginRequestType {

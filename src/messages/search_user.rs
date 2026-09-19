@@ -1,14 +1,13 @@
 use std::sync::Arc;
 
-use anyhow::anyhow;
-use serde::{Deserialize, Serialize, de::Error};
+use serde::{Deserialize, Serialize};
 
 use crate::{
-    api::{OriginRequestType, Process, ResponseType},
+    api::{ErrorResponse, OriginRequestType, Process, ResponseType},
     postgres::CustomPostgresClient,
     redis::{CustomRedisClient, CustomRedisPubSink},
-    result::error::ServerError,
     s3::CustomS3client,
+    unknown_token,
 };
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -38,9 +37,9 @@ impl Process for SearchUser {
         _: &mut CustomRedisPubSink,
         _: &mut Arc<CustomRedisClient>,
         token: &str,
-    ) -> anyhow::Result<ResponseType> {
+    ) -> anyhow::Result<ResponseType, ErrorResponse> {
         if !postgres_client.token_exist_and_not_expired(token).await? {
-            return Err(anyhow!("Token does not exist or expired!"));
+            unknown_token!();
         }
 
         let users = postgres_client

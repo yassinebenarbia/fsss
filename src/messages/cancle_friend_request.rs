@@ -1,14 +1,14 @@
 use std::{str::FromStr, sync::Arc};
 
-use anyhow::anyhow;
+
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-    api::{AsNotification, FriendRequestCancledNotification, OriginRequestType, Process, ResponseType},
+    api::{AsNotification, ErrorResponse, FriendRequestCancledNotification, OriginRequestType, Process, ResponseType},
     postgres::CustomPostgresClient,
     redis::{ChannelPath, CustomRedisClient, CustomRedisPubSink},
-    s3::CustomS3client,
+    s3::CustomS3client, unknown_token,
 };
 
 #[derive(Deserialize, Serialize, Debug)]
@@ -28,9 +28,9 @@ impl Process for CancleFriendRequest {
         _: &mut CustomRedisPubSink,
         redis_client: &mut Arc<CustomRedisClient>,
         token: &str,
-    ) -> anyhow::Result<ResponseType> {
+    ) -> anyhow::Result<ResponseType, ErrorResponse> {
         if !postgres_client.token_exist_and_not_expired(token).await? {
-            return Err(anyhow!("Token does not exist or expired!"));
+            unknown_token!();
         }
 
         let user = postgres_client.get_user_by_token(token).await?;
@@ -42,7 +42,7 @@ impl Process for CancleFriendRequest {
             .await?;
 
         if request.requester_id != user.id {
-            return Err(anyhow!("unauthorized!"));
+            return Err(ErrorResponse::unauthorized());
         }
 
         postgres_client.cancle_friend_request(&request).await?;
